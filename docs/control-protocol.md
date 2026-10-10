@@ -97,6 +97,10 @@ store expose and persist the same setting; scripts keep using canonical command 
 | `document.presets.save` | `{"name":"Product square","settings":{"width":1600,"height":1600,"background":"transparent"}}`: save a snapshot; names are trimmed, 1–255 characters, and ASCII case-insensitive duplicates are rejected |
 | `document.presets.get` | `{"name":"Product square"}` → `{preset,params}`: fetch settings; pass `params` to `file.new` to create a document, optionally adding a document `name` |
 | `document.presets.delete` | `{"name":"Product square"}`: delete the named saved configuration |
+| `cameraRaw.presets.list` | `{}` → `{presets:[{name,settings}]}`: saved Camera Raw adjustment snapshots |
+| `cameraRaw.presets.get` | `{"name":"Soft contrast"}` → `{preset,settings}`: fetch a snapshot without changing the document |
+| `cameraRaw.presets.save` | `{"name":"Soft contrast","settings":{"exposure":0.4,"dehaze":10}}`: save Camera Raw settings; pass `"replace":true` to update a preset with the same name |
+| `cameraRaw.presets.delete` | `{"name":"Soft contrast"}`: delete the named snapshot |
 | `type.hitTest` | `{"layer":id?,"x":px,"y":px}`: character under a document point. No `layer` picks the topmost visible type layer there. Result `{"layer","index","line","inside"}` |
 | `type.caret` | `{"layer":id?,"index":char}`: caret segment in document pixels, `{"index","line","segment":[[x,y],[x,y]]}` (rotated and vertical type included) |
 | `type.navigate` | `{"layer":id?,"index":char,"move":"wordPrev\|wordNext\|linePrev\|lineNext\|lineStart\|lineEnd\|start\|end","x":px?}`: neighbouring caret. `x` keeps the column across line moves. Result `{"index"}` |
@@ -212,6 +216,14 @@ mode, depth, background, and display `unit` (`px`, `in`, `cm`, `mm`, `pt`, `pica
 toolbox colour as `backgroundColor: [r,g,b]` (0..1), so reusing it does not follow later toolbox
 changes. Up to 256 presets are kept. Invalid saved entries are skipped independently; other
 presets and preferences still load. Automatic Recent configurations are separate follow-up work.
+
+Camera Raw adjustment presets persist with preferences (`presets.cameraRaw`) on desktop and web.
+The Camera Raw dialog can save the current settings, apply a saved preset to its preview, update
+the selected preset, and delete it. Selecting a preset does not edit the document; OK commits
+the resulting Camera Raw settings. Each snapshot contains the complete set of adjustment
+parameters, including curves, color grading, and detail, but no preview scale or image data.
+Names are trimmed and unique without regard to ASCII case; up to 128 presets are kept. Invalid
+saved entries are skipped independently, so other preferences still load.
 
 ## Snapping
 
@@ -385,7 +397,7 @@ viewports, so the dialog is drawn over the main window and appears in the image.
 RGB/Grayscale layer. `params: {"smartFilter": {"layer": id, "index": i}}` opens it on an existing
 Camera Raw smart filter instead (as double-clicking the filter in the Layers panel does): the
 stored settings over the pixels below that filter, previewed through the filter mask; commit
-then runs `layer.smartFilter.setParams` with every setting. `params.ui` accepts `set` (filter settings), `before`, `scope`, `view`, `commit` and
+then runs `layer.smartFilter.setParams` with every setting. `params.ui` accepts `preset` (a saved preset name), `set` (filter settings), `before`, `scope`, `view`, `commit` and
 `cancel`. All parts of one request are validated before any is applied; a rejected request
 leaves the settings, view state, preferences and document unchanged (and closes a dialog it
 opened). Unknown `ui` or settings properties, non-boolean `before` / `commit` / `cancel`, and
@@ -393,6 +405,11 @@ opened). Unknown `ui` or settings properties, non-boolean `before` / `commit` / 
 `pointCurveGreen`, `pointCurveBlue`) are empty or 2–16 finite points in 0–255 with inputs at
 least one level apart. Commit dispatches one `filter.cameraRaw` engine command; a failed commit
 keeps the dialog open for correction. Nothing else writes document history.
+
+For example, `{"id":"filter.cameraRaw","params":{"ui":{"preset":"Soft contrast"}}}`
+opens the dialog with that saved snapshot. A `set` in the same request overrides only its named
+fields. `ui.inspect.cameraRaw.preset` names the selected snapshot, and `presetModified` becomes
+true after further adjustments. Saving or deleting a preset changes preferences only.
 
 **Opening a raw file.** An interactive open (File › Open, Open Recent, drag and drop, the
 command line) of a camera raw developed from its sensor data shows this dialog first, titled

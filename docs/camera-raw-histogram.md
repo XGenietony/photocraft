@@ -25,6 +25,11 @@ keyboard nudges and deletion, at most 16 points. Camera Raw commits one `filter.
 OK; scope interaction never edits the document. Double-clicking a Camera Raw smart filter reopens
 this dialog with its stored settings and the pixels below it; OK updates that filter in place.
 
+The Presets control stores named snapshots of all Camera Raw adjustment parameters in app
+preferences. Choosing a snapshot updates the dialog preview; Save Preset… captures the current
+settings or updates the selected name, and Delete removes the saved snapshot. These actions do
+not edit document history. OK applies the current settings, whether saved or modified.
+
 ## PSD Smart Filters
 
 Camera Raw is read and written as a live PSD Smart Filter (`Adobe Camera Raw Filter`, filter id

@@ -18,6 +18,7 @@ pub mod brush_cmds;
 pub mod brush_key_cmds;
 pub mod brush_preset_cmds;
 pub mod build_info;
+pub mod camera_raw_preset_cmds;
 mod canvas_geom;
 pub mod channel_cmds;
 pub mod color_cmds;

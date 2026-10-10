@@ -81,6 +81,8 @@ pub struct PresetState {
     pub tool_presets: Vec<tools::ToolPreset>,
     /// File › New: named snapshots, separate from the name of the document being created.
     pub documents: Vec<crate::document_preset_cmds::DocumentPreset>,
+    /// Camera Raw dialog: named snapshots of develop settings.
+    pub camera_raw: Vec<crate::camera_raw_preset_cmds::CameraRawPreset>,
     pub clone: clone_source::CloneSources,
     /// The user defaults "Make Default" in the Layer Style dialog saves
     /// (effect kind → param set); "Reset to Default" restores them.
@@ -102,6 +104,7 @@ impl Default for PresetState {
             pattern: None,
             tool_presets: tools::builtin(),
             documents: Vec::new(),
+            camera_raw: Vec::new(),
             clone: Default::default(),
             layer_defaults: BTreeMap::new(),
             swatches: swatches::builtin(),
@@ -128,6 +131,8 @@ struct Persisted {
     // Read this set independently: a bad entry must not discard the other preset kinds.
     #[serde(default)]
     documents: Option<Value>,
+    #[serde(default, rename = "cameraRaw")]
+    camera_raw: Option<Value>,
     #[serde(default)]
     custom_shapes: Option<Vec<crate::edit_menu_cmds::CustomShape>>,
     #[serde(default)]
@@ -146,6 +151,7 @@ impl PresetState {
             pattern_groups: Some(self.pattern_groups.clone()),
             tool_presets: Some(self.tool_presets.clone()),
             documents: Some(json!(self.documents)),
+            camera_raw: Some(json!(self.camera_raw)),
             custom_shapes: Some(s.edit_state.custom_shapes.clone()),
             layer_defaults: Some(self.layer_defaults.clone()),
             swatches: Some(self.swatches.clone()),
@@ -180,6 +186,9 @@ impl Session {
         }
         if let Some(d) = p.documents {
             st.documents = crate::document_preset_cmds::load(d);
+        }
+        if let Some(d) = p.camera_raw {
+            st.camera_raw = crate::camera_raw_preset_cmds::load(d);
         }
         if let Some(c) = p.custom_shapes {
             self.edit_state.custom_shapes = c;

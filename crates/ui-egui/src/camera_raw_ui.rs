@@ -30,6 +30,7 @@ pub struct CameraRawDialog {
     pub layer: LayerId,
     layer_name: String,
     pub params: CameraRaw,
+    preset_ui: super::camera_raw_presets_ui::State,
     /// Settings when the dialog opened (stored settings of an edited smart filter).
     original: CameraRaw,
     target: Target,
@@ -77,6 +78,8 @@ impl CameraRawDialog {
             Target::NewFilter | Target::OpenRaw => None,
         });
         result["openingRaw"] = json!(self.raw_open.as_ref().map(|r| json!({"name": r.name, "path": r.path})));
+        result["preset"] = json!(self.preset_ui.selected);
+        result["presetModified"] = json!(self.preset_ui.modified);
         result["view"] = json!(navigation);
         result["sourceSize"] = json!([self.full_w, self.full_h]);
         result["previewApproximate"] = json!(!self.detail.ready && (self.pw != self.full_w || self.ph != self.full_h));
@@ -542,6 +545,7 @@ fn open_pixels(
         layer_name: name,
         original: params.clone(),
         params,
+        preset_ui: Default::default(),
         target,
         before_histogram: RgbHistogram::from_rgba(&proxy),
         processed: Vec::new(),
@@ -618,6 +622,8 @@ pub fn menu(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: &Val
     for (key, value) in fields {
         match key.as_str() {
             "set" | "scope" | "view" => {}
+            "preset" if value.is_string() => {}
+            "preset" => return Some(Err("Camera Raw preset must be a name".into())),
             "before" | "commit" | "cancel" if value.is_boolean() => {}
             "before" | "commit" | "cancel" => return Some(Err(format!("Camera Raw {key} must be a boolean"))),
             _ => return Some(Err(format!("unknown Camera Raw ui property {key}"))),
@@ -644,13 +650,26 @@ pub fn menu(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: &Val
 fn menu_update(app: &mut PhotocraftApp, ctx: &egui::Context, ui: &Value) -> Option<Result<Value, String>> {
     // Stage both filter and presentation updates. No texture, preference or dialog mutation
     // occurs until every part of the request has passed validation.
+    let preset_name = ui.get("preset").and_then(Value::as_str);
+    let preset = if let Some(name) = preset_name {
+        let loaded = match app.run("cameraRaw.presets.get", json!({"name":name})) {
+            Ok(value) => value,
+            Err(error) => return Some(Err(error)),
+        };
+        match serde_json::from_value::<CameraRaw>(loaded["settings"].clone()) {
+            Ok(settings) => Some(settings),
+            Err(error) => return Some(Err(format!("invalid saved Camera Raw preset: {error}"))),
+        }
+    } else {
+        None
+    };
     let d = app.camera_raw.as_ref()?;
-    let mut next_params = d.params.clone();
+    let mut next_params = preset.unwrap_or_else(|| d.params.clone());
     if let Some(set) = ui.get("set") {
         if !set.is_object() {
             return Some(Err("bad Camera Raw settings: expected an object".into()));
         }
-        let mut cur = serde_json::to_value(&d.params).unwrap_or(json!({}));
+        let mut cur = serde_json::to_value(&next_params).unwrap_or(json!({}));
         if let (Value::Object(c), Value::Object(s)) = (&mut cur, set) {
             for (k, v) in s {
                 if !c.contains_key(k) {
@@ -689,6 +708,12 @@ fn menu_update(app: &mut PhotocraftApp, ctx: &egui::Context, ui: &Value) -> Opti
         d.curve_state = Default::default();
     }
     d.dirty |= d.params != next_params;
+    if let Some(name) = preset_name {
+        d.preset_ui.selected = Some(name.to_string());
+        d.preset_ui.modified = ui.get("set").is_some();
+    } else if d.dirty && d.preset_ui.selected.is_some() {
+        d.preset_ui.modified = true;
+    }
     d.params = next_params;
     if let Some(b) = ui.get("before").and_then(Value::as_bool) {
         d.show_before = b;
@@ -880,6 +905,8 @@ fn draw(app: &mut PhotocraftApp, ctx: &egui::Context, own_window: bool) {
     let t = Tokens::get(ctx);
     let screen = ctx.content_rect();
     let mut action: Option<&str> = None;
+    let saved_presets = &app.session.presets.camera_raw;
+    let mut preset_action = None;
     egui::Area::new(egui::Id::new("camera-raw-dialog")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
         let Some(d) = app.camera_raw.as_mut() else { return };
         d.curve_rect = None;
@@ -948,6 +975,7 @@ fn draw(app: &mut PhotocraftApp, ctx: &egui::Context, own_window: bool) {
         // This header is outside the settings scroll area and follows the same Before/After
         // selector as the texture. Both derive from the same completed preview revision.
         super::camera_raw_scope_ui::header(&mut props, d, scope);
+        preset_action = super::camera_raw_presets_ui::panel(&mut props, &mut d.preset_ui, saved_presets, &d.params);
         d.scope.alt_tone = None;
         let mut dirty = false;
         egui::ScrollArea::vertical().id_salt("camera-raw-props").show(&mut props, |ui| {
@@ -1054,6 +1082,9 @@ fn draw(app: &mut PhotocraftApp, ctx: &egui::Context, own_window: bool) {
         super::camera_raw_scope_ui::floating(ctx, d, scope, right);
         super::camera_raw_scope_ui::shortcuts(ctx, scope);
         d.dirty |= dirty;
+        if dirty && d.preset_ui.selected.is_some() {
+            d.preset_ui.modified = true;
+        }
         if d.dirty {
             ctx.request_repaint();
         }
@@ -1075,6 +1106,14 @@ fn draw(app: &mut PhotocraftApp, ctx: &egui::Context, own_window: bool) {
         widgets::checkbox(&mut fu, &mut d.show_before, tl!("Before (Y)"));
         fu.label(egui::RichText::new(format!("{:.0} ms", d.render_ms)).color(t.text_faint));
     });
+    if let Some(action) = preset_action
+        && let Err(error) = handle_preset_action(app, ctx, action)
+    {
+        if let Some(d) = app.camera_raw.as_mut() {
+            d.preset_ui.error = Some(error.clone());
+        }
+        app.ui.status = error;
+    }
     super::camera_raw_scope_ui::persist(app, ctx);
     if ctx.input(|i| i.key_pressed(egui::Key::Y))
         && let Some(d) = app.camera_raw.as_mut()
@@ -1093,6 +1132,46 @@ fn draw(app: &mut PhotocraftApp, ctx: &egui::Context, own_window: bool) {
         Some("cancel") => cancel(app),
         _ => {}
     }
+}
+
+fn handle_preset_action(app: &mut PhotocraftApp, ctx: &egui::Context, action: super::camera_raw_presets_ui::Action) -> Result<(), String> {
+    use super::camera_raw_presets_ui::Action;
+    match action {
+        Action::Apply(name) => {
+            let result = app.run("cameraRaw.presets.get", json!({"name":name}))?;
+            let settings: CameraRaw = serde_json::from_value(result["settings"].clone()).map_err(|e| e.to_string())?;
+            if let Some(d) = app.camera_raw.as_mut() {
+                if d.params.point_curve != settings.point_curve {
+                    d.curve_state = Default::default();
+                }
+                d.dirty |= d.params != settings;
+                d.params = settings;
+                d.preset_ui.selected = Some(name);
+                d.preset_ui.modified = false;
+                d.preset_ui.error = None;
+            }
+        }
+        Action::Save { name, settings, replace } => {
+            let result = app.run("cameraRaw.presets.save", json!({"name":name,"settings":settings,"replace":replace}))?;
+            if let Some(d) = app.camera_raw.as_mut() {
+                d.preset_ui.selected = result["preset"]["name"].as_str().map(str::to_string);
+                d.preset_ui.modified = false;
+                d.preset_ui.saving = false;
+                d.preset_ui.draft.clear();
+                d.preset_ui.error = None;
+            }
+        }
+        Action::Delete(name) => {
+            app.run("cameraRaw.presets.delete", json!({"name":name}))?;
+            if let Some(d) = app.camera_raw.as_mut() {
+                d.preset_ui.selected = None;
+                d.preset_ui.modified = false;
+                d.preset_ui.error = None;
+            }
+        }
+    }
+    ctx.request_repaint();
+    Ok(())
 }
 
 fn hue_color(h: f32) -> Color32 {
@@ -1257,6 +1336,45 @@ mod tests {
         let r = menu(&mut app, &ctx, "filter.cameraRaw", &json!({"ui": {"cancel": true}})).unwrap().unwrap();
         assert_eq!(r["cancelled"], true);
         assert!(menu(&mut app, &ctx, "filter.cameraRaw", &json!({"ui": {"set": {"exposure": "x"}}})).unwrap().is_err());
+    }
+
+    #[test]
+    fn saved_preset_restores_dialog_settings_without_editing_the_document() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+        let ctx = egui::Context::default();
+        app.run("file.new", json!({"width":64,"height":48})).unwrap();
+        app.run("layer.new.layer", json!({})).unwrap();
+        app.run("edit.fill", json!({"color":"#808080"})).unwrap();
+        let layer = app.session.active().unwrap().active_layer.unwrap();
+        let history = app.session.active().unwrap().history.past_len();
+        let before = app.session.active().unwrap().doc.layer(layer).unwrap().surface().unwrap().rgba(32, 24);
+        menu(&mut app, &ctx, "filter.cameraRaw", &json!({})).unwrap().unwrap();
+        menu(&mut app, &ctx, "filter.cameraRaw", &json!({"ui":{"set":{"exposure":1.0,"dehaze":25.0}}})).unwrap().unwrap();
+        let settings = app.camera_raw.as_ref().unwrap().params.clone();
+        handle_preset_action(
+            &mut app,
+            &ctx,
+            crate::camera_raw_presets_ui::Action::Save { name: "  Morning  ".into(), settings: Box::new(settings), replace: false },
+        )
+        .unwrap();
+        assert_eq!(app.session.presets.camera_raw[0].name, "Morning");
+        menu(&mut app, &ctx, "filter.cameraRaw", &json!({"ui":{"set":{"exposure":-1.0,"dehaze":0.0}}})).unwrap().unwrap();
+        let revision = app.camera_raw.as_ref().unwrap().preview_revision;
+        let applied = menu(&mut app, &ctx, "filter.cameraRaw", &json!({"ui":{"preset":"morning"}})).unwrap().unwrap();
+        assert_eq!(applied["params"]["exposure"], 1.0);
+        assert_eq!(applied["params"]["dehaze"], 25.0);
+        assert_eq!(applied["presetModified"], false);
+        assert!(app.camera_raw.as_ref().unwrap().preview_revision > revision);
+        assert!(menu(&mut app, &ctx, "filter.cameraRaw", &json!({"ui":{"preset":"missing"}})).unwrap().is_err());
+        assert_eq!(app.camera_raw.as_ref().unwrap().params.exposure, 1.0);
+        let changed = menu(&mut app, &ctx, "filter.cameraRaw", &json!({"ui":{"preset":"Morning","set":{"exposure":0.5}}})).unwrap().unwrap();
+        assert_eq!(changed["params"]["exposure"], 0.5);
+        assert_eq!(changed["presetModified"], true);
+        handle_preset_action(&mut app, &ctx, crate::camera_raw_presets_ui::Action::Delete("Morning".into())).unwrap();
+        assert!(app.session.presets.camera_raw.is_empty());
+        menu(&mut app, &ctx, "filter.cameraRaw", &json!({"ui":{"cancel":true}})).unwrap().unwrap();
+        assert_eq!(app.session.active().unwrap().history.past_len(), history);
+        assert_eq!(app.session.active().unwrap().doc.layer(layer).unwrap().surface().unwrap().rgba(32, 24), before);
     }
 
     /// An app whose importer is the real one, opening a synthetic DNG.

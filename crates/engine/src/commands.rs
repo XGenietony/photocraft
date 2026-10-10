@@ -1172,6 +1172,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::proof_sim::specs());
     v.extend(crate::presets::specs());
     v.extend(crate::document_preset_cmds::specs());
+    v.extend(crate::camera_raw_preset_cmds::specs());
     v.extend(crate::render_cmds::specs());
     v.extend(crate::slice_cmds::specs());
     v.extend(crate::web_cmds::specs());
