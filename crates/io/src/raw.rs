@@ -33,6 +33,7 @@ pub fn available_profiles(refresh: bool) -> Vec<serde_json::Value> {
     profiles::available(refresh)
 }
 
+/// Skip profile selection for monochrome sensors; otherwise enforce the caller's source policy.
 fn selected_profile(sensor: &Sensor, bytes: &[u8], policy: CameraProfilePolicy) -> Result<Option<profiles::Loaded>, RawError> {
     if sensor.is_monochrome() {
         return Ok(None);
@@ -231,6 +232,7 @@ pub fn import_raw(name: &str, bytes: &[u8]) -> Result<ImportResult, IoError> {
     import_raw_default_policy(name, bytes, CameraProfilePolicy::BundledOnly)
 }
 
+/// Use codec-derived limits and default RAW options with the supplied profile-source authority.
 pub(super) fn import_raw_default_policy(name: &str, bytes: &[u8], policy: CameraProfilePolicy) -> Result<ImportResult, IoError> {
     import_raw_with_policy(name, bytes, &DevelopOptions { limits: limits(), ..Default::default() }, policy)
 }

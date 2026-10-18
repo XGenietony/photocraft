@@ -3,6 +3,7 @@
 use photocraft_io::raw::{RawTuning, import_raw, import_raw_tuned, profile_info};
 use photocraft_raw::testgen::{DngSpec, mosaic, scene};
 
+/// Build a small synthetic CFA DNG with enough scene variation to compare developed pixels.
 fn fixture(model: &str) -> Vec<u8> {
     let mut spec = DngSpec::cfa(32, 24, mosaic(&scene(32, 24), 32, [0, 1, 1, 2], 0, 4095));
     spec.bits = 12;
@@ -11,6 +12,7 @@ fn fixture(model: &str) -> Vec<u8> {
     spec.build()
 }
 
+/// Keep default and tuned imports pixel-identical and preserve CC0 provenance through native saves.
 #[test]
 fn cc0_profile_is_shared_by_default_open_and_raw_tuning_and_survives_save() {
     let bytes = fixture("Canon EOS RP");
@@ -28,6 +30,7 @@ fn cc0_profile_is_shared_by_default_open_and_raw_tuning_and_survives_save() {
     assert_eq!(profile_info(&restored.document), Some(info));
 }
 
+/// Leave sensor calibration intact for excluded, fictional and unknown camera models.
 #[test]
 fn excluded_and_unknown_models_keep_existing_calibration_without_substitution() {
     for model in ["NIKON Z f", "Canon EOS RP fictional successor", "Unknown synthetic body"] {

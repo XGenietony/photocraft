@@ -9,6 +9,7 @@ mod bundled;
 #[path = "raw_profile_catalog.rs"]
 mod catalog;
 
+/// List bundled and installed metadata for callers authorized to discover external profiles.
 pub(super) fn available(refresh: bool) -> Vec<Value> {
     let external = catalog::entries(refresh)
         .into_iter()
@@ -23,16 +24,19 @@ pub(super) fn available(refresh: bool) -> Vec<Value> {
     }
 }
 
+/// Validated calibration and its serializable provenance, kept separate from profile payloads.
 pub(super) struct Loaded {
     pub profile: Arc<CameraProfile>,
     pub report: Value,
 }
 
+/// Accept bounded camera-model components without separators, traversal or control characters.
 #[cfg(not(target_arch = "wasm32"))]
 fn safe_component(s: &str) -> bool {
     !s.is_empty() && s.len() <= 128 && !matches!(s, "." | "..") && !s.chars().any(|c| c.is_control() || matches!(c, '/' | '\\' | ':'))
 }
 
+/// Map Picture Control metadata to a profile name and record adjustments we cannot reproduce.
 #[cfg(any(not(target_arch = "wasm32"), test))]
 fn requested(settings: Option<&CameraSettings>) -> (String, Vec<String>) {
     let mut notes = Vec::new();
@@ -145,6 +149,7 @@ fn load_installed(
     Ok(loaded)
 }
 
+/// Summarize failures beyond the eight detailed entries so saved provenance stays bounded.
 #[cfg(not(target_arch = "wasm32"))]
 fn summarize_skipped(notes: &mut Vec<String>, skipped: usize) {
     if skipped > 8 {
@@ -152,6 +157,7 @@ fn summarize_skipped(notes: &mut Vec<String>, skipped: usize) {
     }
 }
 
+/// Attach selection and fallback diagnostics to the chosen profile's provenance report.
 #[cfg(not(target_arch = "wasm32"))]
 fn append_notes(loaded: &mut Loaded, notes: Vec<String>) {
     if let Some(limitations) = loaded.report.get_mut("limitations").and_then(Value::as_array_mut) {
@@ -215,6 +221,7 @@ fn load_external(path: &std::path::Path, sensor: &Sensor, settings: Option<&Came
     Ok(Loaded { profile, report })
 }
 
+/// Preserve sensor calibration when native DCP loading is unavailable in the web build.
 #[cfg(target_arch = "wasm32")]
 pub(super) fn load_with_policy(_: &Sensor, _: Option<&CameraSettings>, _: crate::CameraProfilePolicy) -> Result<Option<Loaded>, String> {
     Ok(None)
@@ -224,12 +231,14 @@ pub(super) fn load_with_policy(_: &Sensor, _: Option<&CameraSettings>, _: crate:
 #[path = "raw_profiles_loader_tests.rs"]
 mod loader_tests;
 
+/// Store escaped provenance in a fresh import's XMP without embedding the DCP payload.
 pub(super) fn record(doc: &mut photocraft_doc::Document, loaded: &Loaded) {
     let json = loaded.report.to_string().replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
     doc.metadata.xmp = Some(format!(
         r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:pc="https://photocraft.app/ns/raw/1.0/"><pc:CameraProfile>{json}</pc:CameraProfile></rdf:Description></rdf:RDF></x:xmpmeta>"#
     ));
 }
+/// Recover saved profile provenance, ignoring malformed JSON or reports larger than 16 KiB.
 pub(super) fn report(doc: &photocraft_doc::Document) -> Option<Value> {
     let text = doc.metadata.xmp.as_deref()?;
     let (_, tail) = text.split_once("<pc:CameraProfile>")?;
@@ -246,6 +255,7 @@ mod tests {
     use photocraft_color::{ColorMode, SampleType};
     use photocraft_doc::{Document, Size};
 
+    /// Keep escaped provenance through native saves while omitting calibration payloads.
     #[test]
     fn profile_provenance_survives_native_save_without_embedding_vendor_assets() {
         let mut doc = Document::new("profile provenance", Size::new(2, 2), ColorMode::Rgb, SampleType::U16);
@@ -274,6 +284,7 @@ mod tests {
         assert!(report(&doc).is_none());
     }
 
+    /// Treat Auto as its Standard base and preserve explicit looks without invented offsets.
     #[test]
     fn picture_control_selects_profiles_without_fabricating_auto_offsets() {
         let mut settings = CameraSettings {

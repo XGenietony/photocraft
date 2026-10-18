@@ -77,6 +77,7 @@ pub struct CameraRawDialog {
 }
 
 impl CameraRawDialog {
+    /// Describes the dialog's preview, scopes and applied RAW profile for UI automation.
     pub fn describe(&self, view: &crate::state::CameraRawScopeState, navigation: &crate::state::CameraRawPreviewState) -> Value {
         let h = self.histogram();
         let mut result = json!({"layer": self.layer.0, "params": serde_json::to_value(&self.params).unwrap_or(Value::Null), "proxy": [self.pw, self.ph],
@@ -1518,6 +1519,7 @@ mod tests {
         (0..8).map(|i| s.rgba(4 + i * 4, 16)[0]).sum::<f32>() / 8.0
     }
 
+    /// The open-time dialog reports the bundled profile actually used to develop the RAW.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn raw_dialog_exposes_the_applied_cc0_profile() {
@@ -1533,6 +1535,8 @@ mod tests {
         assert_eq!(described["openingRaw"]["profile"]["profile"], "Canon EOS RP");
     }
 
+    /// Restricted RAW opens stay bundled-only through deferred preview and re-development,
+    /// even after the dispatch gate is restored or provenance metadata claims an external DCP.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn automation_raw_open_skips_the_trusted_native_importer() {
@@ -1570,6 +1574,7 @@ mod tests {
         }
     }
 
+    /// Background completion retains the request's profile policy after its dispatch scope ends.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn background_raw_open_keeps_the_original_profile_authority() {
@@ -1696,6 +1701,8 @@ mod tests {
         assert!(mean_red(&app) > before + 0.05, "{before} → {}", mean_red(&app));
     }
 
+    /// RAW dialog cancellation, unchanged commits and the opt-out preference preserve open
+    /// semantics; a deferred request for a missing document returns an error.
     #[test]
     fn cancel_closes_the_raw_and_the_preference_skips_the_dialog() {
         let (mut app, dng) = raw_app();

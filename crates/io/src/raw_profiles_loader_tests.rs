@@ -5,9 +5,11 @@ use super::*;
 use photocraft_raw::{Limits, RawFormat, decode, testgen::DngSpec};
 use std::path::PathBuf;
 
+/// Isolated profile fixtures that clean themselves up without changing process environment.
 struct ProfilesDir(PathBuf);
 
 impl ProfilesDir {
+    /// Create a unique directory so parallel loader tests cannot share fixtures or cache keys.
     fn new() -> Self {
         static SERIAL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let serial = SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -17,6 +19,7 @@ impl ProfilesDir {
         Self(path)
     }
 
+    /// Build catalog metadata, optionally writing bytes or leaving the path missing for failure tests.
     fn entry(&self, file: &str, name: &str, bytes: Option<&[u8]>) -> catalog::Entry {
         let path = self.0.join(file);
         if let Some(bytes) = bytes {
@@ -27,11 +30,13 @@ impl ProfilesDir {
 }
 
 impl Drop for ProfilesDir {
+    /// Remove temporary fixtures even when an assertion unwinds the test.
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
+/// Decode an original CFA fixture and mark it as NEF to exercise DNG-only profile restrictions.
 fn sensor(model: &str) -> Sensor {
     let mut spec = DngSpec::cfa(8, 8, vec![512; 64]);
     spec.model = model.into();
@@ -40,6 +45,7 @@ fn sensor(model: &str) -> Sensor {
     sensor
 }
 
+/// Select requested and base Picture Controls while leaving manual offsets unspecified.
 fn settings(name: &str, base: &str) -> CameraSettings {
     CameraSettings {
         make: "Canon".into(),
@@ -92,6 +98,7 @@ fn dcp(model: &str, name: &str, policy: u32) -> Vec<u8> {
     out
 }
 
+/// Exhaust same-name candidates before falling back, retaining diagnostics without absolute paths.
 #[test]
 fn automatic_selection_tries_every_requested_profile_before_lower_priorities() {
     let dir = ProfilesDir::new();
@@ -107,6 +114,7 @@ fn automatic_selection_tries_every_requested_profile_before_lower_priorities() {
     assert!(!report.contains(dir.0.to_str().unwrap()));
 }
 
+/// Preserve requested/base/standard ordering when corrupt or incompatible candidates are rejected.
 #[test]
 fn automatic_selection_preserves_picture_control_priority_after_rejections() {
     let dir = ProfilesDir::new();
@@ -124,6 +132,7 @@ fn automatic_selection_preserves_picture_control_priority_after_rejections() {
     assert!(!report.contains(dir.0.to_str().unwrap()));
 }
 
+/// Fall back to the bundle after missing, malformed, incompatible, non-file and oversized candidates.
 #[test]
 fn automatic_selection_falls_back_to_bundle_after_all_file_failure_kinds() {
     let dir = ProfilesDir::new();
@@ -148,6 +157,7 @@ fn automatic_selection_falls_back_to_bundle_after_all_file_failure_kinds() {
     assert!(!report.contains(dir.0.to_str().unwrap()));
 }
 
+/// Honor explicit selection failures without scanning the catalog or silently substituting a profile.
 #[test]
 fn explicit_override_errors_are_not_hidden_by_installed_or_bundled_fallback() {
     let dir = ProfilesDir::new();
@@ -165,6 +175,7 @@ fn explicit_override_errors_are_not_hidden_by_installed_or_bundled_fallback() {
     assert_eq!(loaded.report["source"], "external-dcp");
 }
 
+/// Preserve explicit override errors even when model metadata would disable automatic discovery.
 #[test]
 fn explicit_override_errors_are_not_hidden_when_sensor_model_is_missing_or_unsafe() {
     let dir = ProfilesDir::new();
@@ -180,6 +191,7 @@ fn explicit_override_errors_are_not_hidden_when_sensor_model_is_missing_or_unsaf
     }
 }
 
+/// Prevent a DNG-compatible cache entry from bypassing validation on a later NEF import.
 #[test]
 fn cached_profiles_are_revalidated_for_each_sensor_format() {
     let dir = ProfilesDir::new();
@@ -193,6 +205,7 @@ fn cached_profiles_are_revalidated_for_each_sensor_format() {
     assert!(loaded.report.to_string().contains("DNG input only"));
 }
 
+/// Preserve the sensor-only path when both installed selection and bundled coverage are absent.
 #[test]
 fn automatic_failure_without_a_bundle_preserves_the_existing_sensor_calibration_path() {
     let dir = ProfilesDir::new();
@@ -201,6 +214,7 @@ fn automatic_failure_without_a_bundle_preserves_the_existing_sensor_calibration_
     assert!(load_installed(&sensor("Unknown Camera"), None, None, || vec![entry]).unwrap().is_none());
 }
 
+/// Summarize excess candidate failures while keeping provenance small enough to save and recover.
 #[test]
 fn many_bad_candidates_keep_provenance_bounded_and_report_the_skipped_count() {
     let dir = ProfilesDir::new();

@@ -462,6 +462,7 @@ fn shell_word(s: &str) -> String {
     if s.bytes().all(|b| b.is_ascii_alphanumeric() || b"/._-+:,@".contains(&b)) { s.to_string() } else { format!("'{}'", s.replace('\'', r"'\''")) }
 }
 
+/// Bind native desktop services and optional capability-scoped automation callbacks.
 pub fn native(automation: Option<photocraft_automation::AuthorizedWorkspace>) -> Services {
     let clip: Rc<RefCell<Option<arboard::Clipboard>>> = Rc::default();
     let automation_read = automation.clone().map(|workspace| {

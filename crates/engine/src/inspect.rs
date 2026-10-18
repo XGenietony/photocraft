@@ -24,6 +24,7 @@ pub fn session(s: &Session) -> Value {
     })
 }
 
+/// Describe document structure, edit state and recorded RAW profile provenance without loading profiles.
 pub fn document(d: &DocState) -> Value {
     let doc = &d.doc;
     let selected = d.selected_layers();

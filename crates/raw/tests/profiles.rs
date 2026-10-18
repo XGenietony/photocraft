@@ -2,10 +2,13 @@
 use photocraft_raw::testgen::{DngSpec, mosaic, scene};
 use photocraft_raw::{CameraProfile, DevelopOptions, Limits, camera_model_matches, decode, develop_sensor, develop_sensor_profile, picture_control};
 
+/// Builds an original synthetic DCP without an explicit usage-policy tag.
 fn dcp(big: bool) -> Vec<u8> {
     dcp_with_policy(big, None)
 }
 
+/// Serializes an identity calibration and tone curve in the selected TIFF byte order.
+/// An explicit policy also adds a synthetic copyright notice for metadata tests.
 fn dcp_with_policy(big: bool, policy: Option<u32>) -> Vec<u8> {
     let u16b = |v: u16| if big { v.to_be_bytes() } else { v.to_le_bytes() };
     let u32b = |v: u32| if big { v.to_be_bytes() } else { v.to_le_bytes() };
@@ -45,6 +48,7 @@ fn dcp_with_policy(big: bool, policy: Option<u32>) -> Vec<u8> {
     out
 }
 
+/// Both TIFF byte orders must render calibration data and reject incompatible profiles.
 #[test]
 fn external_profile_calibrates_and_renders_both_byte_orders() {
     let mut spec = DngSpec::cfa(24, 16, mosaic(&scene(24, 16), 24, [0, 1, 1, 2], 0, 4095));
@@ -76,6 +80,7 @@ fn external_profile_calibrates_and_renders_both_byte_orders() {
     }
 }
 
+/// Every truncated prefix, duplicate tag and oversized count must fail without panicking.
 #[test]
 fn truncated_and_hostile_profiles_error_instead_of_panicking() {
     let bytes = dcp(false);
@@ -90,6 +95,7 @@ fn truncated_and_hostile_profiles_error_instead_of_panicking() {
     assert!(CameraProfile::from_dcp(&huge).is_err());
 }
 
+/// Known layouts preserve Auto codes while truncated or unknown layouts return `None`.
 #[test]
 fn nikon_picture_control_versions_are_bounded_and_keep_auto_codes() {
     for (version, start, base, adjust, contrast, brightness, saturation, hue) in
@@ -114,6 +120,7 @@ fn nikon_picture_control_versions_are_bounded_and_keep_auto_codes() {
     }
 }
 
+/// Normalization may remove a matching make prefix but must preserve camera identity.
 #[test]
 fn models_match_make_prefixes_but_not_neighbouring_models() {
     for (profile, make, model) in [
@@ -130,6 +137,7 @@ fn models_match_make_prefixes_but_not_neighbouring_models() {
     assert!(!camera_model_matches("Nikon Z f", "Nikon", ""));
 }
 
+/// Missing or restrictive policies allow DNG only; unknown policy values are rejected.
 #[test]
 fn profile_usage_policy_is_retained_and_enforced_for_non_dng_input() {
     let mut spec = DngSpec::cfa(8, 8, mosaic(&scene(8, 8), 8, [0, 1, 1, 2], 0, 4095));
@@ -151,6 +159,7 @@ fn profile_usage_policy_is_retained_and_enforced_for_non_dng_input() {
     assert!(profile.validate(&sensor).is_err());
 }
 
+/// Policy and attribution metadata must survive either byte order without accepting unknown policies.
 #[test]
 fn policy_and_copyright_tags_parse_in_both_byte_orders() {
     for big in [false, true] {
@@ -163,6 +172,7 @@ fn policy_and_copyright_tags_parse_in_both_byte_orders() {
     }
 }
 
+/// A DCP replaces sensor tone defaults while retaining explicit exposure and tone adjustments.
 #[test]
 fn dcp_replaces_sensor_tone_and_keeps_raw_stage_adjustments() {
     let mut spec = DngSpec::cfa(24, 16, mosaic(&scene(24, 16), 24, [0, 1, 1, 2], 0, 4095));

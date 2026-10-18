@@ -484,6 +484,7 @@ fn gray_tone_params(p: &Value) -> Value {
 
 // ---------- the table ----------
 
+/// Build the ordered engine command catalog from built-ins and feature modules.
 #[allow(clippy::too_many_lines)]
 fn build() -> Vec<CommandSpec> {
     let mut v = vec![

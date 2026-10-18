@@ -13,6 +13,7 @@ use serde_json::json;
 struct Fixture(PathBuf);
 
 impl Fixture {
+    /// Create separate allowed and outside directories containing a synthetic RAW and matching CC0 DCP.
     fn new(case: &str) -> Self {
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
         let root = std::env::temp_dir().join(format!("pc-raw-authority-{}-{stamp}-{case}", std::process::id()));
@@ -31,6 +32,7 @@ impl Fixture {
 }
 
 impl Drop for Fixture {
+    /// Remove only this test fixture after success or unwinding.
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
@@ -55,6 +57,7 @@ fn scoped_open_place_and_redevelopment_ignore_installed_profiles() {
     }
 }
 
+/// Read the active document's recorded profile source for the authority assertions.
 fn source(headless: &Headless) -> serde_json::Value {
     profile_info(&headless.session.active().unwrap().doc).unwrap()["source"].clone()
 }

@@ -282,6 +282,8 @@ pub fn import_with_options(name: &str, bytes: &[u8], options: &ImportOptions, ct
     Ok(r)
 }
 
+/// Dispatch supported formats by signature while applying caller options to the top-level import.
+/// Nested sources use their separate bundled-only defaults rather than inheriting installed-profile access.
 fn import_stages(name: &str, bytes: &[u8], ctl: &photocraft_raster::Interrupt, options: &ImportOptions) -> Result<ImportResult, IoError> {
     // A declared native extension must reach its loader so malformed bundles retain format errors.
     if has_extension(name, photocraft_format::EXTENSION) || photocraft_format::is_pcraft(bytes) {

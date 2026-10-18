@@ -25,6 +25,7 @@ pub struct ImportOptions {
 }
 
 impl Default for ImportOptions {
+    /// Apply the document's group-depth limit and authorize only bundled camera profiles.
     fn default() -> Self {
         Self { max_svg_group_depth: photocraft_doc::MAX_GROUP_DEPTH, camera_profiles: CameraProfilePolicy::BundledOnly }
     }

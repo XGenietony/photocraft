@@ -5,6 +5,7 @@ use crate::{
     tiffep,
 };
 
+/// Recognized Nikon Picture Control metadata with adjustment bytes preserved verbatim.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PictureControl {
     pub version: String,
@@ -19,6 +20,7 @@ pub struct PictureControl {
     pub toning_effect_code: u8,
 }
 
+/// Camera identity and optional rendering metadata recovered from TIFF-based RAW input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CameraSettings {
     pub make: String,
@@ -28,12 +30,15 @@ pub struct CameraSettings {
     pub color_space: Option<u32>,
 }
 
+/// Decodes trimmed, NUL-terminated UTF-8 metadata while rejecting control characters.
 fn text(bytes: &[u8]) -> Option<String> {
     let end = bytes.iter().position(|v| *v == 0).unwrap_or(bytes.len());
     let text = std::str::from_utf8(bytes.get(..end)?).ok()?.trim();
     (!text.is_empty() && text.chars().all(|c| !c.is_control())).then(|| text.to_string())
 }
 
+/// Reads a supported Nikon Picture Control layout without interpreting Auto or n/a codes.
+/// Unknown versions, malformed text and truncated fields return `None`.
 pub fn picture_control(bytes: &[u8]) -> Option<PictureControl> {
     let version = text(bytes.get(..4)?)?;
     let (name, base, adjustment, contrast, brightness, saturation, hue) = match version.as_str() {
@@ -57,6 +62,8 @@ pub fn picture_control(bytes: &[u8]) -> Option<PictureControl> {
     })
 }
 
+/// Extracts camera identity and recognized Nikon settings from TIFF-based RAW bytes.
+/// Invalid TIFF or a missing make returns `None`; absent optional metadata stays unset.
 pub fn camera_settings(bytes: &[u8]) -> Option<CameraSettings> {
     let t = Tiff::new(bytes)?;
     let ifds = t.all_ifds();

@@ -8,6 +8,7 @@ use crate::{
 const IDENTITY: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 pub const MAX_BYTES: usize = 32 * 1024 * 1024;
 
+/// Reads a required numeric tag with a caller-supplied element limit and checked payload.
 fn floats(t: &Tiff<'_>, ifd: &Ifd, tag: u16, max: usize) -> Result<Vec<f64>, RawError> {
     let e = ifd.get(tag).ok_or_else(|| RawError::malformed(format!("DCP missing tag {tag}")))?;
     if e.count as usize > max || t.raw(e).is_none() {
@@ -15,6 +16,7 @@ fn floats(t: &Tiff<'_>, ifd: &Ifd, tag: u16, max: usize) -> Result<Vec<f64>, Raw
     }
     (0..e.count as usize).map(|i| t.float(e, i).ok_or_else(|| RawError::malformed(format!("invalid DCP tag {tag} number")))).collect()
 }
+/// Reads a three-channel calibration matrix; four-plane profiles remain unsupported.
 fn matrix(t: &Tiff<'_>, ifd: &Ifd, tag: u16) -> Result<[[f64; 3]; 3], RawError> {
     if ifd.get(tag).is_some_and(|e| e.count == 12) {
         return Err(RawError::unsupported("four-plane camera profiles require a four-channel RAW decoder"));
@@ -22,10 +24,12 @@ fn matrix(t: &Tiff<'_>, ifd: &Ifd, tag: u16) -> Result<[[f64; 3]; 3], RawError> 
     let values = floats(t, ifd, tag, 9)?;
     color::from_slice(&values).ok_or_else(|| RawError::malformed("DCP matrix must have nine values"))
 }
+/// Reads a bounded ASCII profile label, rejecting control characters or missing tags.
 fn string(t: &Tiff<'_>, ifd: &Ifd, tag: u16) -> Result<String, RawError> {
     let e = ifd.get(tag).filter(|e| e.typ == 2 && e.count <= 129).ok_or_else(|| RawError::malformed(format!("DCP missing/oversized string {tag}")))?;
     t.ascii(e).filter(|s| s.chars().all(|c| !c.is_control())).ok_or_else(|| RawError::malformed("invalid DCP string"))
 }
+/// Uses the default only for an absent tag; present tags must contain one number.
 fn scalar(t: &Tiff<'_>, ifd: &Ifd, tag: u16, default: f64) -> Result<f64, RawError> {
     if !ifd.has(tag) {
         return Ok(default);
@@ -33,6 +37,7 @@ fn scalar(t: &Tiff<'_>, ifd: &Ifd, tag: u16, default: f64) -> Result<f64, RawErr
     let v = floats(t, ifd, tag, 1)?;
     v.first().copied().ok_or_else(|| RawError::malformed("empty DCP scalar"))
 }
+/// Reads an optional HSV table after checking dimensions, payload size and encoding.
 fn table(t: &Tiff<'_>, ifd: &Ifd, dims_tag: u16, data_tag: u16, encoding_tag: u16) -> Result<Option<HueSatMap>, RawError> {
     if !ifd.has(data_tag) {
         return Ok(None);
@@ -62,6 +67,8 @@ fn table(t: &Tiff<'_>, ifd: &Ifd, dims_tag: u16, data_tag: u16, encoding_tag: u1
     Ok(Some(map))
 }
 
+/// Parses one bounded DCP directory and validates its supported rendering controls.
+/// Calibration matrices and HSV maps are kept in increasing illuminant-temperature order.
 pub(super) fn parse(bytes: &[u8]) -> Result<CameraProfile, RawError> {
     if bytes.len() > MAX_BYTES {
         return Err(RawError::malformed("DCP file exceeds 32 MiB"));

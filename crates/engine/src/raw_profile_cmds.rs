@@ -3,6 +3,8 @@ use crate::{EngineError, Result, Session, commands::CommandSpec};
 use serde_json::{Value, json};
 
 const ID: &str = "raw.profiles";
+/// Validate the optional model filter and refresh flag, then report profile/model counts.
+/// The query may inspect installed profiles but does not edit the session or its journal.
 fn run(_: &mut Session, p: &Value) -> Result<Value> {
     let bad = |s: &str| EngineError::BadParams { cmd: ID.into(), msg: s.into() };
     let object = p.as_object().ok_or_else(|| bad("expected an object"))?;
@@ -27,6 +29,7 @@ fn run(_: &mut Session, p: &Value) -> Result<Value> {
         json!({"models":models.len(),"count":profiles.len(),"bundledCount":bundled,"profiles":profiles,"source":"bundled-and-user-profiles","rawDecoderSupportIsSeparate":true}),
     )
 }
+/// Register the always-available, non-journaled camera-profile inventory query.
 pub fn specs() -> Vec<CommandSpec> {
     vec![CommandSpec {
         id: ID,

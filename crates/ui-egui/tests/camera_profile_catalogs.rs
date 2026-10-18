@@ -3,6 +3,7 @@
 use std::fs;
 use std::path::Path;
 
+/// Every shipped locale provides exactly one nonempty translation of the camera-profile label.
 #[test]
 fn camera_profile_label_is_present_once_in_every_shipped_catalog() {
     let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/i18n");

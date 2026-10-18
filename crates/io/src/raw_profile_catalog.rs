@@ -1,4 +1,5 @@
 //! Bounded index of external DCP headers. Indexing never loads the proprietary table payloads.
+/// Unvalidated catalog metadata; loading must still validate the DCP against its sensor.
 #[derive(Clone)]
 pub(super) struct Entry {
     pub path: std::path::PathBuf,
@@ -6,6 +7,7 @@ pub(super) struct Entry {
     pub name: String,
 }
 
+/// Discover configured and per-user roots; callers must authorize installed-profile access first.
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn roots() -> Vec<std::path::PathBuf> {
     use std::path::PathBuf;
@@ -26,6 +28,7 @@ pub(super) fn roots() -> Vec<std::path::PathBuf> {
     roots
 }
 
+/// Read only bounded model/name tags, skipping unreadable, malformed or oversized files.
 #[cfg(not(target_arch = "wasm32"))]
 fn header(path: &std::path::Path) -> Option<Entry> {
     use std::io::{Read, Seek, SeekFrom};
@@ -102,6 +105,8 @@ fn header(path: &std::path::Path) -> Option<Entry> {
     Some(Entry { path: path.to_path_buf(), model: model?, name: name? })
 }
 
+/// Index authorized roots with depth and entry limits, reusing results for up to one minute.
+/// A refresh or a change of roots invalidates the cache; full profile validation happens later.
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn entries(refresh: bool) -> Vec<Entry> {
     use std::{
@@ -150,6 +155,7 @@ pub(super) fn entries(refresh: bool) -> Vec<Entry> {
     entries
 }
 
+/// Return an empty installed-profile catalog on platforms without filesystem discovery.
 #[cfg(target_arch = "wasm32")]
 pub(super) fn entries(_: bool) -> Vec<Entry> {
     Vec::new()

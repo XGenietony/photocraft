@@ -7,6 +7,7 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
+/// Audited metadata and compressed bytes for one explicitly licensed bundled profile.
 struct Asset {
     model: &'static str,
     name: &'static str,
@@ -19,6 +20,7 @@ struct Asset {
 mod data;
 const REVISION: &str = "5f486d3678b34c74ba0c63571c17babe20935019";
 
+/// Report the embedded catalog without consulting external files or decompressing profiles.
 pub(super) fn available() -> Vec<Value> {
     data::ASSETS
         .iter()
@@ -29,6 +31,7 @@ pub(super) fn available() -> Vec<Value> {
         .collect()
 }
 
+/// Bound decompression and require the decoded licence, model and name to match the manifest.
 fn parse(asset: &Asset) -> Result<CameraProfile, String> {
     const LIMIT: u64 = 32 * 1024 * 1024;
     let mut bytes = Vec::new();
@@ -44,6 +47,8 @@ fn parse(asset: &Asset) -> Result<CameraProfile, String> {
     Ok(profile)
 }
 
+/// Load a matching embedded calibration, revalidating cached profiles for the current sensor.
+/// Uncovered models retain their sensor calibration rather than borrowing a different model.
 pub(super) fn load(sensor: &Sensor, settings: Option<&CameraSettings>) -> Result<Option<Loaded>, String> {
     let Some(model) = sensor.model.as_deref() else { return Ok(None) };
     let Some(asset) = data::ASSETS.iter().find(|a| photocraft_raw::camera_model_matches(a.model, sensor.make.as_deref().unwrap_or(""), model)) else {
@@ -83,6 +88,7 @@ mod tests {
     use super::*;
     use photocraft_raw::{Limits, RawFormat, decode, testgen::DngSpec};
 
+    /// Keep disk assets, the manifest and decoded metadata restricted to the nine audited CC0 files.
     #[test]
     fn entire_bundle_is_parseable_model_bound_and_explicitly_licensed() {
         assert_eq!(data::ASSETS.len(), 9);
@@ -112,6 +118,7 @@ mod tests {
         }
     }
 
+    /// Exercise embedded rendering without installed files and reject substitution for uncovered models.
     #[test]
     fn cc0_profile_loads_without_external_files_and_unknown_models_are_not_substituted() {
         let mut spec = DngSpec::cfa(8, 8, vec![512; 64]);

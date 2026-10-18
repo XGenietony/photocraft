@@ -7,6 +7,7 @@ mod parse;
 mod table;
 pub use table::HueSatMap;
 
+/// Camera-specific calibration and rendering data parsed from a standalone DCP file.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CameraProfile {
     pub name: String,
@@ -26,9 +27,13 @@ pub struct CameraProfile {
 }
 
 impl CameraProfile {
+    /// Parses bounded DCP data, rejecting malformed or unsupported profile tags.
+    /// Call [`Self::validate`] before applying the result to a particular sensor.
     pub fn from_dcp(bytes: &[u8]) -> Result<Self, RawError> {
         parse::parse(bytes)
     }
+    /// Checks the camera model, input-format usage policy and rendering data.
+    /// The embedded usage policy is separate from the profile's licence terms.
     pub fn validate(&self, sensor: &Sensor) -> Result<(), RawError> {
         if self.embed_policy <= 1 && sensor.format != crate::RawFormat::Dng {
             return Err(RawError::unsupported("this camera profile's usage policy permits DNG input only; non-DNG processing is disabled"));
@@ -39,6 +44,7 @@ impl CameraProfile {
         self.validate_data()
     }
 
+    /// Rejects unbounded metadata, invalid calibration matrices and unsupported tables.
     fn validate_data(&self) -> Result<(), RawError> {
         if self.embed_policy > 3 || self.copyright.len() > 4096 {
             return Err(RawError::unsupported("unknown camera profile usage policy or oversized copyright notice"));
@@ -88,6 +94,7 @@ impl CameraProfile {
         Ok(())
     }
 
+    /// Prepares a validated profile for the camera neutral and a linear exposure gain.
     pub(crate) fn prepare(&self, color: &crate::ColorInfo, neutral: [f64; 3], gain: f32) -> table::Prepared<'_> {
         table::Prepared::new(self, color.weight(color::cct(color.neutral_to_xy(neutral))) as f32, gain)
     }

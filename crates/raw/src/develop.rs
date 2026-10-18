@@ -169,6 +169,8 @@ pub(crate) fn resolve_neutral(s: &Sensor, opts: &DevelopOptions, sc: &Scale, war
     resolve_neutral_with_color(s, &s.color, opts, sc, warnings)
 }
 
+/// Resolve a normalized camera neutral using the selected calibration and white-balance options.
+/// Missing as-shot data uses grey-world estimation with a warning; invalid multipliers return an error.
 fn resolve_neutral_with_color(s: &Sensor, color: &crate::ColorInfo, opts: &DevelopOptions, sc: &Scale, warnings: &mut Vec<String>) -> Result<[f64; 3]> {
     // Monochrome data has no colour to balance.
     if s.is_monochrome() {

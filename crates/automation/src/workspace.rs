@@ -334,6 +334,7 @@ fn params_contain_ambient_path(id: &str, params: &Value) -> bool {
     })
 }
 
+/// Identify commands that can discover installed profiles without an explicit path argument.
 fn profile_command_may_read_ambient(id: &str, params: &Value) -> bool {
     // Installed profiles scan OS and user directories even without a request path.
     if matches!(id, "color.profileMismatch" | "edit.colorSettings" | "edit.installedProfiles" | "view.proofSetup" | "raw.profiles") {
@@ -680,6 +681,7 @@ mod tests {
     }
 
     #[test]
+    /// Verify scoped commands reject ambient file access while permitting supported in-memory operations.
     fn filesystem_commands_fail_closed() {
         for id in [
             "file.open",

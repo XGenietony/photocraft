@@ -21,6 +21,7 @@ pub fn open_bytes(name: &str, bytes: &[u8]) -> Result<Opened, AutomationError> {
     open_bytes_with_policy(name, bytes, photocraft_io::CameraProfilePolicy::BundledOnly)
 }
 
+/// Preserve native ZIP loading while forwarding caller-selected RAW profile authority.
 fn open_bytes_with_policy(name: &str, bytes: &[u8], policy: photocraft_io::CameraProfilePolicy) -> Result<Opened, AutomationError> {
     if Path::new(name).extension().is_some_and(|extension| extension.eq_ignore_ascii_case(photocraft_format::EXTENSION)) {
         return Ok(Opened { document: photocraft_format::load_from_bytes(bytes)?, warnings: Vec::new(), source_read_only: false });

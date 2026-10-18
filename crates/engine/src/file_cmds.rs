@@ -270,6 +270,7 @@ pub(crate) fn sanitize(name: &str) -> String {
     if s.is_empty() { "layer".into() } else { s }
 }
 
+/// Decode auxiliary content with bundled-only calibration, rejecting warning-only preview imports.
 pub(crate) fn import(name: &str, bytes: &[u8]) -> Result<Document> {
     import_with_profile_policy(name, bytes, photocraft_io::CameraProfilePolicy::BundledOnly)
 }
@@ -514,6 +515,8 @@ pub(crate) fn tag_exr_colorspace(s: &Session, name: &str, doc: &mut Document) {
     }
 }
 
+/// Open bytes under the session's profile authority, optionally overriding the format hint.
+/// Retain import warnings, template naming and source read-only handling in the new document.
 pub fn open_bytes_as(s: &mut Session, name: &str, bytes: &[u8], as_ext: Option<&str>, path: Option<String>) -> Result<Value> {
     crate::allocation::checkpoint("importing document")?;
     let decode_name = match as_ext {

@@ -2,18 +2,22 @@
 use super::CameraProfile;
 use crate::RawError;
 
+/// DNG HSV adjustments: hue shifts in degrees and multiplicative saturation/value scales.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HueSatMap {
     pub dims: [usize; 3],
     pub srgb_value: bool,
     pub values: Vec<[f32; 3]>,
 }
+/// Converts a linear value to sRGB encoding for a profile's encoded-value table.
 fn encode(v: f32) -> f32 {
     if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }
 }
+/// Converts the adjusted sRGB-encoded value back to the linear rendering domain.
 fn decode(v: f32) -> f32 {
     if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
 }
+/// Converts nonnegative RGB to HSV with hue in turns and zero saturation for neutrals.
 fn hsv([r, g, b]: [f32; 3]) -> [f32; 3] {
     let v = r.max(g).max(b);
     let d = v - r.min(g).min(b);
@@ -29,6 +33,7 @@ fn hsv([r, g, b]: [f32; 3]) -> [f32; 3] {
     };
     [(h / 6.0).rem_euclid(1.0), d / v.max(1e-10), v]
 }
+/// Converts HSV back to RGB, wrapping the hue expressed in turns.
 fn rgb([h, s, v]: [f32; 3]) -> [f32; 3] {
     let h = h.rem_euclid(1.0) * 6.0;
     let f = h.fract();
@@ -45,6 +50,7 @@ fn rgb([h, s, v]: [f32; 3]) -> [f32; 3] {
     }
 }
 impl HueSatMap {
+    /// Checks supported axis sizes, coefficient count and finite adjustment bounds.
     pub(crate) fn validate(&self) -> Result<(), RawError> {
         let [h, s, v] = self.dims;
         let n = h.checked_mul(s).and_then(|n| n.checked_mul(v));
@@ -64,11 +70,13 @@ impl HueSatMap {
         }
         Ok(())
     }
+    /// Fetches a value-major, saturation-fastest entry or an identity adjustment.
     fn at(&self, h: usize, s: usize, v: usize) -> [f32; 3] {
         let [nh, ns, _] = self.dims;
         let i = v.checked_mul(nh).and_then(|n| n.checked_add(h)).and_then(|n| n.checked_mul(ns)).and_then(|n| n.checked_add(s));
         i.and_then(|i| self.values.get(i)).copied().unwrap_or([0.0, 1.0, 1.0])
     }
+    /// Trilinearly samples a validated map, wrapping hue and clamping saturation/value.
     fn sample(&self, [h, s, v]: [f32; 3]) -> [f32; 3] {
         let [nh, ns, nv] = self.dims;
         let axis = |x: f32, n: usize| {
@@ -94,6 +102,8 @@ impl HueSatMap {
         }
         out
     }
+    /// Applies HSV corrections to linear RGB, optionally interpolating illuminant maps.
+    /// The supplied weight selects this map; its complement selects the other map.
     fn apply(&self, input: [f32; 3], other: Option<(&HueSatMap, f32)>) -> [f32; 3] {
         let mut c = hsv(input.map(|v| v.max(0.0)));
         let encoded = self.srgb_value && self.dims[2] > 1;
@@ -117,6 +127,7 @@ impl HueSatMap {
     }
 }
 
+/// Per-render profile state with illuminant weighting and a precomputed tone lookup.
 pub(crate) struct Prepared<'a> {
     profile: &'a CameraProfile,
     weight: f32,
@@ -124,6 +135,8 @@ pub(crate) struct Prepared<'a> {
     tone: Vec<f32>,
 }
 impl<'a> Prepared<'a> {
+    /// Builds a bounded cubic lookup from a validated profile, retaining clipped endpoints.
+    /// `weight` selects the first illuminant map and `gain` is a linear exposure multiplier.
     pub(super) fn new(profile: &'a CameraProfile, weight: f32, gain: f32) -> Self {
         let points = &profile.tone_curve;
         let mut slopes = vec![0.0; points.len()];
@@ -163,10 +176,12 @@ impl<'a> Prepared<'a> {
             .collect();
         Self { profile, weight, gain, tone }
     }
+    /// Exercises the color and tone stages together on one linear RGB test sample.
     #[cfg(test)]
     pub(crate) fn render(&self, rgb: [f32; 3]) -> [f32; 3] {
         self.render_tone(self.render_color(rgb))
     }
+    /// Applies illuminant HSV maps, exposure gain and the look table in linear ProPhoto RGB.
     pub(crate) fn render_color(&self, mut rgb: [f32; 3]) -> [f32; 3] {
         if let Some(first) = self.profile.hue_sat_maps.first() {
             rgb = first.apply(rgb, self.profile.hue_sat_maps.get(1).map(|b| (b, self.weight)));
@@ -177,6 +192,7 @@ impl<'a> Prepared<'a> {
         }
         rgb
     }
+    /// Applies the profile tone lookup per channel after clamping inputs to its SDR domain.
     pub(crate) fn render_tone(&self, rgb: [f32; 3]) -> [f32; 3] {
         rgb.map(|v| {
             let x = v.clamp(0.0, 1.0) * 65536.0;
@@ -191,6 +207,7 @@ impl<'a> Prepared<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Locks down degree-based hue shifts and corrections in sRGB-encoded value space.
     #[test]
     fn hsv_hue_shift_and_srgb_value_encoding_follow_the_profile() {
         let hue = HueSatMap { dims: [1, 2, 1], srgb_value: false, values: vec![[60.0, 1.0, 1.0]; 2] };
@@ -202,6 +219,7 @@ mod tests {
         let p = value.apply([0.25, 0.0, 0.0], None);
         assert!((p[0] - decode(encode(0.25) * 0.5)).abs() < 1e-6);
     }
+    /// A monotone source curve must retain its endpoints and knots without overshoot.
     #[test]
     fn cubic_tone_lookup_is_monotone_and_preserves_endpoints() {
         let profile = CameraProfile {
@@ -223,6 +241,7 @@ mod tests {
         assert!(p.tone.windows(2).all(|w| w[0] <= w[1]));
     }
 
+    /// Clipped white points and local reversals must survive lookup generation safely.
     #[test]
     fn clipped_domains_and_small_real_profile_reversals_do_not_panic_or_get_replaced() {
         let profile = CameraProfile {

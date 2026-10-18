@@ -2,6 +2,7 @@ use photocraft_engine::Session;
 use serde_json::json;
 
 #[test]
+/// Verify an unmatched query is read-only and malformed query parameters are rejected.
 fn camera_profile_inventory_is_a_read_only_query_for_any_model() {
     let mut s = Session::new();
     let r = s.execute("raw.profiles", json!({"model":"nonexistent-synthetic-test-body-7744"})).unwrap();
@@ -16,6 +17,7 @@ fn camera_profile_inventory_is_a_read_only_query_for_any_model() {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
+/// Keep native inventory at nine distinct CC0 models, excluding the unapproved Nikon Z f asset.
 fn native_inventory_exposes_exact_bundled_coverage_and_license() {
     let mut session = Session::new();
     let result = session.execute("raw.profiles", json!({})).unwrap();
