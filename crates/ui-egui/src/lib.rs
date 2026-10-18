@@ -1330,28 +1330,34 @@ impl PhotocraftApp {
 
     /// Open a file's bytes as a new document named `name`; returns the import warnings (also
     /// shown to the user). Files from disk go through [`open_file`](Self::open_file), which also
-    /// remembers the path. Brush and gradient files go to the preset libraries instead.
+    /// remembers the path and explicitly authorizes installed profiles for a trusted local open.
+    /// Byte-only RAW input uses bundled profiles. Brush and gradient files go to the preset libraries instead.
     pub fn open_bytes(&mut self, name: &str, bytes: &[u8]) -> Result<Vec<String>, String> {
-        self.open_bytes_from(name, bytes, None)
+        self.open_bytes_from(name, bytes, None, photocraft_io::CameraProfilePolicy::BundledOnly)
     }
 
     /// [`Self::open_bytes`] for a file read from `path` (File › Save writes back there; it goes
-    /// to Open Recent), when known.
-    pub(crate) fn open_bytes_from(&mut self, name: &str, bytes: &[u8], path: Option<&str>) -> Result<Vec<String>, String> {
+    /// to Open Recent), when known. Profile authority is explicit; a save path does not grant it.
+    pub(crate) fn open_bytes_from(
+        &mut self,
+        name: &str,
+        bytes: &[u8],
+        path: Option<&str>,
+        camera_profiles: photocraft_io::CameraProfilePolicy,
+    ) -> Result<Vec<String>, String> {
         if let Some(r) = preset_files_ui::open(self, name, bytes) {
             return r.map(|()| Vec::new());
         }
         let name = &self.open_name(name);
+        let camera_profiles = if self.session.authorize.is_some() { photocraft_io::CameraProfilePolicy::BundledOnly } else { camera_profiles };
         // Decoded on a worker: a tab with progress appears now, the document when it's ready
         // (warnings are shown then).
         if self.background_jobs {
-            jobs_ui::start_open(self, name, path.map(str::to_string), jobs_ui::bytes(bytes))?;
+            jobs_ui::start_open(self, name, path.map(str::to_string), jobs_ui::bytes(bytes), camera_profiles)?;
             return Ok(Vec::new());
         }
         let import = self.services.import.as_ref().ok_or("no importer configured")?;
         let max_svg_group_depth = self.session.prefs().file_handling.rasterize_svg_groups_deeper_than as usize;
-        let camera_profiles =
-            if self.session.authorize.is_some() { photocraft_io::CameraProfilePolicy::BundledOnly } else { photocraft_io::CameraProfilePolicy::Installed };
         let (doc, warnings) = if camera_profiles == photocraft_io::CameraProfilePolicy::BundledOnly && photocraft_io::raw::is_raw(bytes) {
             let imported = photocraft_io::import_with_svg_group_depth(name, bytes, max_svg_group_depth).map_err(|e| e.to_string())?;
             (imported.document, imported.warnings)

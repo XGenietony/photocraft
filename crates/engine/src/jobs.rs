@@ -481,14 +481,25 @@ impl Session {
     /// Color Settings ask about the file's profile, the document is held back instead and the
     /// result is `{held, name, warnings, color}` (`color` the question): take it with
     /// [`Session::take_held_open`] once answered.
+    /// Byte inputs use bundled camera profiles; native paths may use installed profiles.
     pub fn start_open(&mut self, name: &str, source: OpenSource) -> Result<Started> {
+        let camera_profiles = match &source {
+            OpenSource::Bytes(_) => photocraft_io::CameraProfilePolicy::BundledOnly,
+            OpenSource::Path(_) => photocraft_io::CameraProfilePolicy::Installed,
+        };
+        self.start_open_with_profile_policy(name, source, camera_profiles)
+    }
+
+    /// Open with explicit camera-profile authority, retaining [`Session::start_open`] behavior.
+    /// Trusted native readers may opt already-read bytes into installed profiles. An active
+    /// authorization gate always limits the worker to bundled profiles, regardless of the request.
+    pub fn start_open_with_profile_policy(&mut self, name: &str, source: OpenSource, camera_profiles: photocraft_io::CameraProfilePolicy) -> Result<Started> {
         let label = format!("Opening {name}");
         let name_w = name.to_string();
         let name_a = name.to_string();
         let max_svg_group_depth = self.prefs().file_handling.rasterize_svg_groups_deeper_than as usize;
         // Capture the request's authority before it leaves the dispatch scope for a worker.
-        let camera_profiles =
-            if self.authorize.is_some() { photocraft_io::CameraProfilePolicy::BundledOnly } else { photocraft_io::CameraProfilePolicy::Installed };
+        let camera_profiles = if self.authorize.is_some() { photocraft_io::CameraProfilePolicy::BundledOnly } else { camera_profiles };
         let options = photocraft_io::ImportOptions { max_svg_group_depth, camera_profiles };
         self.start_job(
             OPEN_JOB,

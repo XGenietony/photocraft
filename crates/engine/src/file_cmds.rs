@@ -515,15 +515,28 @@ pub(crate) fn tag_exr_colorspace(s: &Session, name: &str, doc: &mut Document) {
     }
 }
 
-/// Open bytes under the session's profile authority, optionally overriding the format hint.
+/// Open bytes with bundled camera profiles, optionally overriding the format hint.
 /// Retain import warnings, template naming and source read-only handling in the new document.
+/// `path` is save metadata and does not grant access to installed profiles.
 pub fn open_bytes_as(s: &mut Session, name: &str, bytes: &[u8], as_ext: Option<&str>, path: Option<String>) -> Result<Value> {
+    open_bytes_as_with_profile_policy(s, name, bytes, as_ext, path, photocraft_io::CameraProfilePolicy::BundledOnly)
+}
+
+/// Decode with authority chosen by the byte source, narrowed by any session authorization gate.
+fn open_bytes_as_with_profile_policy(
+    s: &mut Session,
+    name: &str,
+    bytes: &[u8],
+    as_ext: Option<&str>,
+    path: Option<String>,
+    camera_profiles: photocraft_io::CameraProfilePolicy,
+) -> Result<Value> {
     crate::allocation::checkpoint("importing document")?;
     let decode_name = match as_ext {
         Some(ext) => format!("{}.{}", stem(name), ext.trim_start_matches('.')),
         None => name.to_string(),
     };
-    let camera_profiles = if s.authorize.is_some() { photocraft_io::CameraProfilePolicy::BundledOnly } else { photocraft_io::CameraProfilePolicy::Installed };
+    let camera_profiles = if s.authorize.is_some() { photocraft_io::CameraProfilePolicy::BundledOnly } else { camera_profiles };
     let options = photocraft_io::ImportOptions { camera_profiles, ..Default::default() };
     let r = photocraft_io::import_with_options(&decode_name, bytes, &options, &photocraft_raster::Interrupt::NONE)
         .map_err(|e| EngineError::Other(format!("{decode_name}: {e}")))?;
@@ -552,7 +565,7 @@ fn open_as(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_param(p, "path", "file.openAs")?.to_string();
     let bytes = read_file(&path)?;
     let as_ext = p.get("as").or_else(|| p.get("format")).and_then(Value::as_str);
-    open_bytes_as(s, &path, &bytes, as_ext, Some(path.clone()))
+    open_bytes_as_with_profile_policy(s, &path, &bytes, as_ext, Some(path.clone()), photocraft_io::CameraProfilePolicy::Installed)
 }
 
 // ---------- place ----------

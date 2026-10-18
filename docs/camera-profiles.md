@@ -60,11 +60,16 @@ The byte-only import APIs and RAW re-development/curve helpers default to
 user directories or the external-profile cache. A trusted top-level open opts into
 `CameraProfilePolicy::Installed` through `ImportOptions` / the policy-aware RAW helpers.
 Profile authority is a typed caller decision, never taken from document XMP or provenance.
+Generic UI and engine byte opens use this same bundled-only default, including bytes with
+an optional display/save path. Trusted native file-open entry points explicitly authorize
+installed profiles and carry that decision into background processing; the path metadata
+alone grants no authority.
 
 Capability-scoped headless and desktop automation use bundled-only imports, including
 indirect RAW bytes embedded in other formats. Deferred prompts, background opens and Camera
 Raw dialogs retain the original request's authority after the request gate is restored;
-a restricted re-development cannot acquire installed-profile access from a local dialog.
+both deferred tone-curve previews and re-development narrow captured authority when the
+current session has an authorization gate.
 
 RAW Smart Object placement and recursive decoding use bundled calibration in both trusted
 and scoped sessions. This keeps re-rendering, editing embedded contents and PSD export

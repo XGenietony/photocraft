@@ -79,6 +79,35 @@ fn isolated_profile_authority_child() {
     local.command_run("file.revert", json!({})).unwrap();
     assert_eq!(source(&local), "external-dcp", "trusted Revert keeps the installed calibration");
 
+    // Engine byte entry points do not grant installed access from optional save metadata.
+    for save_path in [None, Some("metadata-only.dng".to_string())] {
+        let mut engine = photocraft_engine::Session::new();
+        photocraft_engine::file_cmds::open_bytes_as(&mut engine, "memory.dng", &bytes, None, save_path).unwrap();
+        assert_eq!(profile_info(&engine.active().unwrap().doc).unwrap()["source"], "bundled-dcp");
+    }
+    for requested in [None, Some(photocraft_io::CameraProfilePolicy::Installed)] {
+        for restricted in [false, true] {
+            let mut engine = photocraft_engine::Session::new();
+            if restricted {
+                engine.authorize = Some(|_, _| Ok(()));
+            }
+            let source = photocraft_engine::jobs::OpenSource::Bytes(std::sync::Arc::new(bytes.clone()));
+            let started = match requested {
+                Some(policy) => engine.start_open_with_profile_policy("memory.dng", source, policy),
+                None => engine.start_open("memory.dng", source),
+            }
+            .unwrap();
+            engine.authorize = None;
+            if let photocraft_engine::jobs::Started::Job(job) = started {
+                engine.wait_job(job).unwrap();
+            }
+            let expected = if requested.is_some() && !restricted { "external-dcp" } else { "bundled-dcp" };
+            assert_eq!(profile_info(&engine.active().unwrap().doc).unwrap()["source"], expected);
+        }
+    }
+    local.command_run("file.openAs", json!({"path": input.to_str().unwrap()})).unwrap();
+    assert_eq!(source(&local), "external-dcp", "native open-as retains installed-profile authority");
+
     let mut scoped = Headless::with_workspace(AuthorizedWorkspace::new(Some(&workspace), None).unwrap());
     scoped.open(Path::new("synthetic.dng")).unwrap();
     assert_eq!(source(&scoped), "bundled-dcp");

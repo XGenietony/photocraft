@@ -193,11 +193,16 @@ pub fn run(app: &mut PhotocraftApp, id: &str, params: Value) -> Result<Value, St
 
 /// Open a file in the background: a tab appears at once and shows the progress; the document
 /// replaces it when decoded. `path` is remembered for File › Save and Open Recent.
-pub fn start_open(app: &mut PhotocraftApp, name: &str, path: Option<String>, source: OpenSource) -> Result<(), String> {
+pub fn start_open(
+    app: &mut PhotocraftApp,
+    name: &str,
+    path: Option<String>,
+    source: OpenSource,
+    camera_profiles: photocraft_io::CameraProfilePolicy,
+) -> Result<(), String> {
     let name = &app.open_name(name);
-    let camera_profiles =
-        if app.session.authorize.is_some() { photocraft_io::CameraProfilePolicy::BundledOnly } else { photocraft_io::CameraProfilePolicy::Installed };
-    match app.session.start_open(name, source).map_err(|e| e.to_string())? {
+    let camera_profiles = if app.session.authorize.is_some() { photocraft_io::CameraProfilePolicy::BundledOnly } else { camera_profiles };
+    match app.session.start_open_with_profile_policy(name, source, camera_profiles).map_err(|e| e.to_string())? {
         // Inline (wasm): finish now, like a background open that ended at once.
         Started::Done(v) => finish_open(app, name, path.as_deref(), &v, None, camera_profiles),
         Started::Job(job) => {

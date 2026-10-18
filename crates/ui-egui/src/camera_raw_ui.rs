@@ -243,7 +243,7 @@ fn open_raw(app: &mut PhotocraftApp, ctx: &egui::Context, raw: RawOpen) -> Resul
     app.session.set_active(index);
     let (layer, surf, _) = crate::distort_ui::active_pixels(app)?;
     open_pixels(app, ctx, layer, surf, CameraRaw::default(), Coverage::None, Target::OpenRaw)?;
-    let camera_profiles = raw.camera_profiles;
+    let camera_profiles = if app.session.authorize.is_some() { photocraft_io::CameraProfilePolicy::BundledOnly } else { raw.camera_profiles };
     let curve = match (&raw.bytes, &raw.path) {
         (Some(b), _) => Some(photocraft_io::raw::tone_curve_with_policy(b, camera_profiles)),
         #[cfg(not(target_arch = "wasm32"))]
@@ -1529,10 +1529,72 @@ mod tests {
         app.open_bytes("synthetic.dng", &spec.build()).unwrap();
         let raw = app.pending_raw_open.take().unwrap();
         assert_eq!(raw.profile.as_ref().unwrap()["license"], "CC0-1.0");
-        assert_eq!(raw.camera_profiles, photocraft_io::CameraProfilePolicy::Installed);
+        assert_eq!(raw.camera_profiles, photocraft_io::CameraProfilePolicy::BundledOnly);
         open_raw(&mut app, &egui::Context::default(), raw).unwrap();
         let described = app.camera_raw.as_ref().unwrap().describe(&app.ui.camera_raw_scope, &app.ui.camera_raw_preview);
         assert_eq!(described["openingRaw"]["profile"]["profile"], "Canon EOS RP");
+    }
+
+    /// A gate installed after a trusted open also restricts its deferred tone-curve lookup.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn deferred_raw_preview_rechecks_profile_authority() {
+        const CHILD: &str = "PHOTOCRAFT_TEST_DEFERRED_RAW_PREVIEW";
+        if std::env::var_os(CHILD).is_none() {
+            // Isolate the override from parallel tests; a directory is never a valid DCP.
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "camera_raw_ui::tests::deferred_raw_preview_rechecks_profile_authority", "--nocapture"])
+                .env(CHILD, "1")
+                .env("PHOTOCRAFT_CAMERA_PROFILE", env!("CARGO_MANIFEST_DIR"))
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        use photocraft_io::CameraProfilePolicy::{BundledOnly, Installed};
+        let (mut app, _) = raw_app();
+        let mut spec = photocraft_raw::testgen::DngSpec::cfa(32, 24, vec![512; 32 * 24]);
+        spec.model = "Canon EOS RP".into();
+        let bytes = spec.build();
+        let bundled_curve = photocraft_io::raw::tone_curve_with_policy(&bytes, BundledOnly);
+        assert!(!bundled_curve.is_empty());
+        assert_ne!(bundled_curve, photocraft_io::raw::tone_curve_with_policy(&bytes, Installed));
+        app.open_bytes("synthetic.dng", &bytes).unwrap();
+        queue_open_dialog(&mut app, "synthetic.dng", None, Some(&bytes), Installed);
+        let raw = app.pending_raw_open.take().unwrap();
+        app.session.authorize = Some(|_, _| Ok(()));
+        open_raw(&mut app, &egui::Context::default(), raw).unwrap();
+        assert_eq!(app.camera_raw.as_ref().unwrap().raw_curve.as_ref(), Some(&bundled_curve));
+    }
+
+    /// Generic bytes bypass installed-profile importers both inline and on a worker, while
+    /// the explicit local-file entry keeps its trusted importer and captured authority.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn byte_only_raw_open_is_bundled_for_sync_and_background() {
+        use photocraft_io::CameraProfilePolicy::{BundledOnly, Installed};
+        let mut spec = photocraft_raw::testgen::DngSpec::cfa(32, 24, vec![512; 32 * 24]);
+        spec.model = "Canon EOS RP".into();
+        let bytes = spec.build();
+        for background in [false, true] {
+            let services = crate::Services { import: Some(Box::new(|_, _, _| Err("installed importer invoked".into()))), ..Default::default() };
+            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), services);
+            app.background_jobs = background;
+            app.open_bytes("memory.dng", &bytes).unwrap();
+            if let Some(tab) = app.jobs.opens.pop() {
+                let result = app.session.wait_job(tab.job).unwrap();
+                crate::jobs_ui::finish_open_tab(&mut app, &tab, &result).unwrap();
+            }
+            assert_eq!(app.pending_raw_open.as_ref().unwrap().camera_profiles, BundledOnly);
+            assert_eq!(photocraft_io::raw::profile_info(&app.session.active().unwrap().doc).unwrap()["source"], "bundled-dcp");
+        }
+        let (mut app, _) = raw_app();
+        app.open_file("trusted.dng", &bytes).unwrap();
+        assert_eq!(app.pending_raw_open.as_ref().unwrap().camera_profiles, Installed);
+        // A stored path/name is not itself a grant of profile-source authority.
+        let (mut app, _) = raw_app();
+        app.open_bytes_from("memory.dng", &bytes, Some("save-name.dng"), BundledOnly).unwrap();
+        assert_eq!(app.pending_raw_open.as_ref().unwrap().camera_profiles, BundledOnly);
     }
 
     /// Restricted RAW opens stay bundled-only through deferred preview and re-development,
@@ -1584,7 +1646,14 @@ mod tests {
             if restricted {
                 app.session.authorize = Some(|_, _| Ok(()));
             }
-            crate::jobs_ui::start_open(&mut app, "queued.dng", None, photocraft_engine::jobs::OpenSource::Bytes(std::sync::Arc::new(bytes))).unwrap();
+            crate::jobs_ui::start_open(
+                &mut app,
+                "queued.dng",
+                None,
+                photocraft_engine::jobs::OpenSource::Bytes(std::sync::Arc::new(bytes)),
+                photocraft_io::CameraProfilePolicy::Installed,
+            )
+            .unwrap();
             let tab = app.jobs.opens.pop().unwrap();
             assert_eq!(tab.camera_profiles, expected);
             app.session.authorize = None;
