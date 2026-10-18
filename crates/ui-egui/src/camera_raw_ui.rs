@@ -206,6 +206,8 @@ pub struct RawOpen {
     /// The file, when it was opened from bytes (no path to read it again from).
     pub bytes: Option<std::sync::Arc<Vec<u8>>>,
     pub profile: Option<Value>,
+    /// Profile-source authority captured by the caller that opened the bytes, never from XMP.
+    pub camera_profiles: photocraft_io::CameraProfilePolicy,
 }
 
 /// Should an interactive open of `name` show the open-time Camera Raw dialog? `warnings` are
@@ -221,7 +223,7 @@ pub fn without_develop_note(warnings: &[String]) -> Vec<String> {
 }
 
 /// Queues the open-time dialog for the active document (shown on the next frame).
-pub fn queue_open_dialog(app: &mut PhotocraftApp, name: &str, path: Option<&str>, bytes: Option<&[u8]>) {
+pub fn queue_open_dialog(app: &mut PhotocraftApp, name: &str, path: Option<&str>, bytes: Option<&[u8]>, camera_profiles: photocraft_io::CameraProfilePolicy) {
     if let Some(st) = app.session.active() {
         app.pending_raw_open = Some(RawOpen {
             document: st.doc.id,
@@ -229,6 +231,7 @@ pub fn queue_open_dialog(app: &mut PhotocraftApp, name: &str, path: Option<&str>
             path: path.map(str::to_string),
             bytes: bytes.map(|b| std::sync::Arc::new(b.to_vec())),
             profile: photocraft_io::raw::profile_info(&st.doc),
+            camera_profiles,
         });
     }
 }
@@ -239,10 +242,11 @@ fn open_raw(app: &mut PhotocraftApp, ctx: &egui::Context, raw: RawOpen) -> Resul
     app.session.set_active(index);
     let (layer, surf, _) = crate::distort_ui::active_pixels(app)?;
     open_pixels(app, ctx, layer, surf, CameraRaw::default(), Coverage::None, Target::OpenRaw)?;
+    let camera_profiles = raw.camera_profiles;
     let curve = match (&raw.bytes, &raw.path) {
-        (Some(b), _) => Some(photocraft_io::raw::tone_curve(b)),
+        (Some(b), _) => Some(photocraft_io::raw::tone_curve_with_policy(b, camera_profiles)),
         #[cfg(not(target_arch = "wasm32"))]
-        (None, Some(p)) => std::fs::read(p).ok().map(|b| photocraft_io::raw::tone_curve(&b)),
+        (None, Some(p)) => std::fs::read(p).ok().map(|b| photocraft_io::raw::tone_curve_with_policy(&b, camera_profiles)),
         _ => None,
     };
     if let Some(d) = app.camera_raw.as_mut() {
@@ -321,6 +325,7 @@ fn commit_open_raw(app: &mut PhotocraftApp, params: &CameraRaw, raw: &RawOpen) -
     };
     app.session.set_active(index);
     let (name, doc_id) = (raw.name.clone(), raw.document);
+    let camera_profiles = if app.session.authorize.is_some() { photocraft_io::CameraProfilePolicy::BundledOnly } else { raw.camera_profiles };
     let work = move |ctx: &photocraft_engine::jobs::JobCtx| -> photocraft_engine::Result<(photocraft_io::ImportResult, bool)> {
         ctx.progress(0.0, "Reading");
         let bytes = match source {
@@ -334,7 +339,8 @@ fn commit_open_raw(app: &mut PhotocraftApp, params: &CameraRaw, raw: &RawOpen) -
         };
         ctx.check()?;
         ctx.progress(0.05, "Developing");
-        photocraft_io::raw::import_raw_tuned(&name, &bytes, &tuning).map_err(|e| photocraft_engine::EngineError::Other(e.to_string()))
+        photocraft_io::raw::import_raw_tuned_with_policy(&name, &bytes, &tuning, camera_profiles)
+            .map_err(|e| photocraft_engine::EngineError::Other(e.to_string()))
     };
     let apply = move |s: &mut photocraft_engine::Session, (r, wb): (photocraft_io::ImportResult, bool)| replace_raw_document(s, doc_id, r, wb);
     let label = crate::i18n::fmt(tl!("Developing {name}"), &[("name", &raw.name)]);
@@ -1521,9 +1527,67 @@ mod tests {
         app.open_bytes("synthetic.dng", &spec.build()).unwrap();
         let raw = app.pending_raw_open.take().unwrap();
         assert_eq!(raw.profile.as_ref().unwrap()["license"], "CC0-1.0");
+        assert_eq!(raw.camera_profiles, photocraft_io::CameraProfilePolicy::Installed);
         open_raw(&mut app, &egui::Context::default(), raw).unwrap();
         let described = app.camera_raw.as_ref().unwrap().describe(&app.ui.camera_raw_scope, &app.ui.camera_raw_preview);
         assert_eq!(described["openingRaw"]["profile"]["profile"], "Canon EOS RP");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn automation_raw_open_skips_the_trusted_native_importer() {
+        let mut spec = photocraft_raw::testgen::DngSpec::cfa(32, 24, vec![512; 32 * 24]);
+        spec.model = "Canon EOS RP".into();
+        let bytes = spec.build();
+        for scoped_ui_open in [false, true] {
+            let services = crate::Services { import: Some(Box::new(|_, _, _| Err("trusted native importer was called".into()))), ..Default::default() };
+            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), services);
+            if scoped_ui_open {
+                app.session.authorize = Some(|_, _| Ok(()));
+                app.open_bytes("authorized.dng", &bytes).unwrap();
+            } else {
+                app.open_automation_bytes("authorized.dng", &bytes).unwrap();
+            }
+            let profile = photocraft_io::raw::profile_info(&app.session.active().unwrap().doc).unwrap();
+            assert_eq!(profile["source"], "bundled-dcp");
+            assert_eq!(profile["license"], "CC0-1.0");
+            assert_eq!(app.session.documents().len(), 1);
+            if scoped_ui_open {
+                // Deferred UI work runs after the control request restores the local gate.
+                app.session.authorize = None;
+                let mut raw = app.pending_raw_open.take().unwrap();
+                assert_eq!(raw.camera_profiles, photocraft_io::CameraProfilePolicy::BundledOnly);
+                // Untrusted provenance is display data; it cannot grant profile-source authority.
+                raw.profile = Some(json!({"source": "external-dcp"}));
+                open_raw(&mut app, &egui::Context::default(), raw).unwrap();
+                let dialog = app.camera_raw.take().unwrap();
+                let raw = dialog.raw_open.unwrap();
+                let result = commit_open_raw(&mut app, &CameraRaw { exposure: 0.5, ..Default::default() }, &raw).unwrap();
+                assert_eq!(result["redeveloped"], true);
+                let redeveloped = photocraft_io::raw::profile_info(&app.session.active().unwrap().doc).unwrap();
+                assert_eq!(redeveloped["source"], "bundled-dcp");
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn background_raw_open_keeps_the_original_profile_authority() {
+        for restricted in [false, true] {
+            let (mut app, bytes) = raw_app();
+            let expected = if restricted { photocraft_io::CameraProfilePolicy::BundledOnly } else { photocraft_io::CameraProfilePolicy::Installed };
+            if restricted {
+                app.session.authorize = Some(|_, _| Ok(()));
+            }
+            crate::jobs_ui::start_open(&mut app, "queued.dng", None, photocraft_engine::jobs::OpenSource::Bytes(std::sync::Arc::new(bytes))).unwrap();
+            let tab = app.jobs.opens.pop().unwrap();
+            assert_eq!(tab.camera_profiles, expected);
+            app.session.authorize = None;
+            let result = app.session.wait_job(tab.job).unwrap();
+            crate::jobs_ui::finish_open_tab(&mut app, &tab, &result).unwrap();
+            let raw = app.pending_raw_open.take().unwrap();
+            assert_eq!(raw.camera_profiles, expected);
+        }
     }
 
     #[test]
@@ -1654,7 +1718,19 @@ mod tests {
         assert!(app.pending_raw_open.is_none());
         // A non-raw never queues the dialog; a closed document is an error, not a panic.
         assert!(
-            open_raw(&mut app, &ctx, RawOpen { document: photocraft_doc::DocId(u64::MAX), name: "x".into(), path: None, bytes: None, profile: None }).is_err()
+            open_raw(
+                &mut app,
+                &ctx,
+                RawOpen {
+                    document: photocraft_doc::DocId(u64::MAX),
+                    name: "x".into(),
+                    path: None,
+                    bytes: None,
+                    profile: None,
+                    camera_profiles: photocraft_io::CameraProfilePolicy::BundledOnly,
+                }
+            )
+            .is_err()
         );
     }
 

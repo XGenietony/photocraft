@@ -1350,7 +1350,14 @@ impl PhotocraftApp {
         }
         let import = self.services.import.as_ref().ok_or("no importer configured")?;
         let max_svg_group_depth = self.session.prefs().file_handling.rasterize_svg_groups_deeper_than as usize;
-        let (doc, warnings) = import(name, bytes, max_svg_group_depth)?;
+        let camera_profiles =
+            if self.session.authorize.is_some() { photocraft_io::CameraProfilePolicy::BundledOnly } else { photocraft_io::CameraProfilePolicy::Installed };
+        let (doc, warnings) = if camera_profiles == photocraft_io::CameraProfilePolicy::BundledOnly && photocraft_io::raw::is_raw(bytes) {
+            let imported = photocraft_io::import_with_svg_group_depth(name, bytes, max_svg_group_depth).map_err(|e| e.to_string())?;
+            (imported.document, imported.warnings)
+        } else {
+            import(name, bytes, max_svg_group_depth)?
+        };
         // Edit › Color Settings policies apply on open; Ask When Opening holds the file back
         // until its prompt is answered, and later files wait behind it (`open_prompt`).
         // Missing fonts are read from the document itself: it may not be open yet (#4559).
@@ -1371,6 +1378,7 @@ impl PhotocraftApp {
                 slot: None,
                 question,
                 policy_applied: false,
+                camera_profiles,
             },
         );
         Ok(warnings)
@@ -1400,7 +1408,15 @@ impl PhotocraftApp {
     fn import_automation_document(&mut self, name: &str, bytes: &[u8]) -> Result<Vec<String>, String> {
         let import = self.services.import.as_ref().ok_or("no importer configured")?;
         let max_svg_group_depth = self.session.prefs().file_handling.rasterize_svg_groups_deeper_than as usize;
-        let (doc, warnings) = import(name, bytes, max_svg_group_depth)?;
+        // The native importer permits installed camera profiles for local opens. Authorized
+        // document bytes do not grant access to those ambient paths. Nested imports of other
+        // formats already use the IO layer's bundled-only default.
+        let (doc, warnings) = if photocraft_io::raw::is_raw(bytes) {
+            let imported = photocraft_io::import_with_svg_group_depth(name, bytes, max_svg_group_depth).map_err(|e| e.to_string())?;
+            (imported.document, imported.warnings)
+        } else {
+            import(name, bytes, max_svg_group_depth)?
+        };
         // The caller records the path it read from.
         self.session.add_document(doc, None);
         if let Some(st) = self.session.active_mut() {

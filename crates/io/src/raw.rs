@@ -18,7 +18,7 @@ use photocraft_raw::{CameraLook, DevelopOptions, Limits, PreviewColorSpace, RawE
 pub use photocraft_raw::{Tone, retone};
 
 use crate::flat::image_to_document;
-use crate::{ImportResult, IoError};
+use crate::{CameraProfilePolicy, ImportResult, IoError};
 
 #[path = "raw_profiles.rs"]
 mod profiles;
@@ -33,12 +33,12 @@ pub fn available_profiles(refresh: bool) -> Vec<serde_json::Value> {
     profiles::available(refresh)
 }
 
-fn selected_profile(sensor: &Sensor, bytes: &[u8]) -> Result<Option<profiles::Loaded>, RawError> {
+fn selected_profile(sensor: &Sensor, bytes: &[u8], policy: CameraProfilePolicy) -> Result<Option<profiles::Loaded>, RawError> {
     if sensor.is_monochrome() {
         return Ok(None);
     }
     let settings = photocraft_raw::camera_settings(bytes);
-    profiles::load(sensor, settings.as_ref()).map_err(|e| RawError::Malformed(format!("camera profile could not be applied: {e}")))
+    profiles::load_with_policy(sensor, settings.as_ref(), policy).map_err(|e| RawError::Malformed(format!("camera profile could not be applied: {e}")))
 }
 
 /// `true` if `bytes` are a camera raw file `photocraft-raw` recognises.
@@ -92,8 +92,14 @@ pub struct RawTuning {
 /// camera's as-shot white-balance multipliers (the same gains the Camera Raw filter applies to
 /// RGB). The second value is `false` when the file has
 /// no as-shot white balance: Temperature / Tint were then not applied, and the caller keeps
-/// them as RGB adjustments.
+/// them as RGB adjustments. This byte-only helper uses bundled camera profiles only.
 pub fn import_raw_tuned(name: &str, bytes: &[u8], tuning: &RawTuning) -> Result<(ImportResult, bool), IoError> {
+    import_raw_tuned_with_policy(name, bytes, tuning, CameraProfilePolicy::BundledOnly)
+}
+
+/// Re-develops RAW data with explicit profile-source authority. Callers must retain the
+/// authority of the original open rather than granting ambient access from stored metadata.
+pub fn import_raw_tuned_with_policy(name: &str, bytes: &[u8], tuning: &RawTuning, policy: CameraProfilePolicy) -> Result<(ImportResult, bool), IoError> {
     let format = photocraft_raw::identify(bytes).map(|f| f.name()).unwrap_or("camera raw");
     let exposure = f64::from(tuning.exposure);
     if !exposure.is_finite() || !(-10.0..=10.0).contains(&exposure) {
@@ -110,7 +116,7 @@ pub fn import_raw_tuned(name: &str, bytes: &[u8], tuning: &RawTuning) -> Result<
     };
     // The colour rendering the default open used (a look fitted to the camera's JPEG for files
     // without colour calibration), so re-developing changes only what the sliders change.
-    let profile = selected_profile(&sensor, bytes)?;
+    let profile = selected_profile(&sensor, bytes, policy)?;
     let camera_look = if profile.is_none() { default_look(bytes, &sensor) } else { None };
     let mut opts = DevelopOptions { limits: limits(), exposure, tone, camera_look, ..Default::default() };
     let wb_applied = match sensor.camera_wb {
@@ -138,11 +144,16 @@ pub fn import_raw_tuned(name: &str, bytes: &[u8], tuning: &RawTuning) -> Result<
 
 /// The tone curve `bytes` develop with by default: the fitted look's for a file without colour
 /// calibration (see [`import_raw_with`]), else the camera profile's (empty: none, or not a raw
-/// this crate decodes). For previews of the open-time raw-stage sliders
+/// this crate decodes). Installed profiles are excluded by default. For previews of the open-time raw-stage sliders
 /// ([`photocraft_raw::retone`]), in linear-light knots.
 pub fn tone_curve(bytes: &[u8]) -> Vec<[f32; 2]> {
+    tone_curve_with_policy(bytes, CameraProfilePolicy::BundledOnly)
+}
+
+/// Returns the selected RAW tone curve using only profile sources authorized by the caller.
+pub fn tone_curve_with_policy(bytes: &[u8], policy: CameraProfilePolicy) -> Vec<[f32; 2]> {
     let Ok(sensor) = photocraft_raw::decode(bytes, &limits()) else { return Vec::new() };
-    if let Ok(Some(profile)) = selected_profile(&sensor, bytes) {
+    if let Ok(Some(profile)) = selected_profile(&sensor, bytes, policy) {
         return profile.profile.tone_curve.iter().map(|p| p.map(|v| v as f32)).collect();
     }
     match default_look(bytes, &sensor) {
@@ -217,7 +228,11 @@ fn developed_document(
 
 /// Develops a raw file with the default settings.
 pub fn import_raw(name: &str, bytes: &[u8]) -> Result<ImportResult, IoError> {
-    import_raw_with(name, bytes, &DevelopOptions { limits: limits(), ..Default::default() })
+    import_raw_default_policy(name, bytes, CameraProfilePolicy::BundledOnly)
+}
+
+pub(super) fn import_raw_default_policy(name: &str, bytes: &[u8], policy: CameraProfilePolicy) -> Result<ImportResult, IoError> {
+    import_raw_with_policy(name, bytes, &DevelopOptions { limits: limits(), ..Default::default() }, policy)
 }
 
 /// Smallest preview long edge preferred for the colour fit (a smaller preview decodes faster;
@@ -266,9 +281,9 @@ pub fn fit_preview_look(raw: &[u8], sensor: &Sensor, opts: &DevelopOptions) -> R
 }
 
 /// Decodes and develops; a file without colour calibration gets a look fitted to its preview.
-fn develop_fitted(bytes: &[u8], opts: &DevelopOptions) -> Result<(photocraft_raw::Developed, Option<profiles::Loaded>), RawError> {
+fn develop_fitted(bytes: &[u8], opts: &DevelopOptions, policy: CameraProfilePolicy) -> Result<(photocraft_raw::Developed, Option<profiles::Loaded>), RawError> {
     let sensor = photocraft_raw::decode(bytes, &opts.limits)?;
-    let profile = if opts.camera_look.is_none() { selected_profile(&sensor, bytes)? } else { None };
+    let profile = if opts.camera_look.is_none() { selected_profile(&sensor, bytes, policy)? } else { None };
     let mut opts = Cow::Borrowed(opts);
     if profile.is_none()
         && opts.camera_look.is_none()
@@ -288,9 +303,16 @@ pub const DEVELOPED_NOTE: &str = "developed with default settings";
 
 /// Develops a raw file with explicit settings. Without `opts.camera_look`, a file without
 /// colour calibration gets one fitted to its embedded JPEG when that clearly helps.
+/// Installed profiles require explicit authority through [`import_raw_with_policy`].
 pub fn import_raw_with(name: &str, bytes: &[u8], opts: &DevelopOptions) -> Result<ImportResult, IoError> {
+    import_raw_with_policy(name, bytes, opts, CameraProfilePolicy::BundledOnly)
+}
+
+/// Develops RAW bytes with explicit processing options and camera-profile authority.
+/// An explicit camera look takes precedence over DCP selection under either policy.
+pub fn import_raw_with_policy(name: &str, bytes: &[u8], opts: &DevelopOptions, policy: CameraProfilePolicy) -> Result<ImportResult, IoError> {
     let format = photocraft_raw::identify(bytes).map(|f| f.name()).unwrap_or("camera raw");
-    match develop_fitted(bytes, opts) {
+    match develop_fitted(bytes, opts, policy) {
         Ok((dev, profile)) => {
             let summary = format!("{DEVELOPED_NOTE} ({} demosaic, as-shot white balance)", opts.demosaic.id());
             developed_document(name, format, dev, &summary, profile.as_ref())

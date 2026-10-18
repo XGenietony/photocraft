@@ -16,6 +16,9 @@ for its RAW format; unsupported compression variants remain separate decoder wor
 
 ## Selection and coverage
 
+Trusted native and local CLI direct opens explicitly authorize installed camera profiles.
+Their selection order is:
+
 1. `PHOTOCRAFT_CAMERA_PROFILE`: an explicitly selected DCP file, validated against the camera.
 2. Profiles in PhotoCraft user directories or `PHOTOCRAFT_CAMERA_PROFILES_DIR`.
 3. The bundled profile for the exact matching model.
@@ -30,7 +33,12 @@ Model matching normalizes case, spaces, punctuation and make prefixes. Regional 
 are not guessed. For user profiles, Nikon Picture Control name/base metadata selects a matching
 look when available; Camera Standard, Adobe Standard and then another same-model profile are
 fallbacks, reported in the limitations. Auto's adaptive processing is not emulated.
-An explicit invalid, wrong-model or usage-restricted profile produces an error.
+Automatic selection tries all candidates at each priority, then the next priority and finally
+the bundled profile. A missing, unreadable, malformed, wrong-model or usage-restricted catalog
+entry is skipped. When another DCP is selected, its report includes bounded diagnostics
+containing filenames, never absolute paths. If no usable installed or bundled profile exists, development retains the
+existing RAW calibration/fallback behavior. An explicit invalid, wrong-model or usage-restricted
+`PHOTOCRAFT_CAMERA_PROFILE` produces an error; it is never silently replaced by another profile.
 
 The Camera Raw dialog displays the applied profile. `document.inspect.rawProfile` and
 `ui.inspect.cameraRaw.openingRaw.profile` expose source, name, model, filename, license/notice,
@@ -44,6 +52,24 @@ XMP preserves provenance, without embedding the profile payload or absolute file
 Omit `model` to list all available profiles. `bundledCount` identifies the built-in portion;
 each entry has `source` (`bundled-dcp` or `external-dcp`). User-directory inventory is a header
 index, not confirmation that every external profile is licensed or renderable.
+
+## Profile-source authority
+
+The byte-only import APIs and RAW re-development/curve helpers default to
+`CameraProfilePolicy::BundledOnly`. They do not consult profile environment variables,
+user directories or the external-profile cache. A trusted top-level open opts into
+`CameraProfilePolicy::Installed` through `ImportOptions` / the policy-aware RAW helpers.
+Profile authority is a typed caller decision, never taken from document XMP or provenance.
+
+Capability-scoped headless and desktop automation use bundled-only imports, including
+indirect RAW bytes embedded in other formats. Deferred prompts, background opens and Camera
+Raw dialogs retain the original request's authority after the request gate is restored;
+a restricted re-development cannot acquire installed-profile access from a local dialog.
+
+RAW Smart Object placement and recursive decoding use bundled calibration in both trusted
+and scoped sessions. This keeps re-rendering, editing embedded contents and PSD export
+independent of user-directory files and shared-cache history. To preserve a trusted external
+profile rendering in a Smart Object, develop the RAW first and embed the developed document.
 
 ## User profile locations and usage policy
 

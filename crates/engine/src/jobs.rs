@@ -486,6 +486,10 @@ impl Session {
         let name_w = name.to_string();
         let name_a = name.to_string();
         let max_svg_group_depth = self.prefs().file_handling.rasterize_svg_groups_deeper_than as usize;
+        // Capture the request's authority before it leaves the dispatch scope for a worker.
+        let camera_profiles =
+            if self.authorize.is_some() { photocraft_io::CameraProfilePolicy::BundledOnly } else { photocraft_io::CameraProfilePolicy::Installed };
+        let options = photocraft_io::ImportOptions { max_svg_group_depth, camera_profiles };
         self.start_job(
             OPEN_JOB,
             json!({"name": name}),
@@ -499,9 +503,8 @@ impl Session {
                 };
                 ctx.check()?;
                 ctx.progress(0.02, "Decoding");
-                let imported = ctx
-                    .stage(0.02, 0.95, "Decoding", |ctl| photocraft_io::import_with_svg_group_depth_and_interrupt(&name_w, &bytes, max_svg_group_depth, ctl))
-                    .map_err(|e| match e {
+                let imported =
+                    ctx.stage(0.02, 0.95, "Decoding", |ctl| photocraft_io::import_with_options(&name_w, &bytes, &options, ctl)).map_err(|e| match e {
                         photocraft_io::IoError::Cancelled => EngineError::Cancelled,
                         e => EngineError::Other(e.to_string()),
                     })?;

@@ -77,42 +77,99 @@ fn requested(settings: Option<&CameraSettings>) -> (String, Vec<String>) {
     (profile, notes)
 }
 
+/// Select calibration using only the profile sources permitted by the caller.
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) fn load(sensor: &Sensor, settings: Option<&CameraSettings>) -> Result<Option<Loaded>, String> {
-    use std::{
-        io::Read,
-        path::{Path, PathBuf},
-    };
-    let Some(model) = sensor.model.as_deref().filter(|m| safe_component(m)) else { return Ok(None) };
+pub(super) fn load_with_policy(sensor: &Sensor, settings: Option<&CameraSettings>, policy: crate::CameraProfilePolicy) -> Result<Option<Loaded>, String> {
+    // Authority is checked before consulting environment variables, the installed catalog or cache.
+    if policy == crate::CameraProfilePolicy::BundledOnly {
+        return bundled::load(sensor, settings);
+    }
+    let explicit = std::env::var_os("PHOTOCRAFT_CAMERA_PROFILE").map(std::path::PathBuf::from);
+    load_installed(sensor, settings, explicit.as_deref(), || catalog::entries(false))
+}
+
+/// Try installed profiles in Picture Control priority order; only an explicit override is mandatory.
+#[cfg(not(target_arch = "wasm32"))]
+fn load_installed(
+    sensor: &Sensor,
+    settings: Option<&CameraSettings>,
+    explicit: Option<&std::path::Path>,
+    entries: impl FnOnce() -> Vec<catalog::Entry>,
+) -> Result<Option<Loaded>, String> {
     let (requested, mut notes) = requested(settings);
-    let path = if let Some(path) = std::env::var_os("PHOTOCRAFT_CAMERA_PROFILE") {
-        Some(PathBuf::from(path))
-    } else {
-        let entries = catalog::entries(false);
-        let cameras: Vec<_> = entries.iter().filter(|p| photocraft_raw::camera_model_matches(&p.model, sensor.make.as_deref().unwrap_or(""), model)).collect();
-        let mut selected = None;
-        let base = settings.and_then(|s| s.picture_control.as_ref()).map(|p| format!("Camera {}", p.base)).unwrap_or_else(|| "Camera Standard".into());
-        for name in [&requested, &base, "Camera Standard", "Adobe Standard"] {
-            if let Some(p) = cameras.iter().find(|p| p.name.eq_ignore_ascii_case(name)) {
-                if !p.name.eq_ignore_ascii_case(&requested) {
-                    notes.push(format!("{requested} is unavailable; using the installed {} profile", p.name));
-                }
-                selected = Some(p.path.clone());
-                break;
+    if let Some(path) = explicit {
+        return load_external(path, sensor, settings, notes).map(Some);
+    }
+    let Some(model) = sensor.model.as_deref().filter(|m| safe_component(m)) else { return Ok(None) };
+    let entries = entries();
+    let cameras: Vec<_> = entries.iter().filter(|p| photocraft_raw::camera_model_matches(&p.model, sensor.make.as_deref().unwrap_or(""), model)).collect();
+    let base = settings.and_then(|s| s.picture_control.as_ref()).map(|p| format!("Camera {}", p.base)).unwrap_or_else(|| "Camera Standard".into());
+    let mut candidates = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for name in [&requested, &base, "Camera Standard", "Adobe Standard"] {
+        for entry in &cameras {
+            if entry.name.eq_ignore_ascii_case(name) && seen.insert(&entry.path) {
+                candidates.push(*entry);
             }
         }
-        selected.or_else(|| {
-            cameras.first().map(|p| {
-                notes.push(format!("{requested} is unavailable; using the installed {} profile", p.name));
-                p.path.clone()
-            })
-        })
-    };
-    let Some(path) = path else { return bundled::load(sensor, settings) };
+    }
+    for entry in cameras {
+        if seen.insert(&entry.path) {
+            candidates.push(entry);
+        }
+    }
+    let mut skipped = 0usize;
+    for candidate in candidates {
+        match load_external(&candidate.path, sensor, settings, Vec::new()) {
+            Ok(mut loaded) => {
+                if !candidate.name.eq_ignore_ascii_case(&requested) {
+                    notes.push(format!("{requested} is unavailable; using the installed {} profile", candidate.name));
+                }
+                summarize_skipped(&mut notes, skipped);
+                append_notes(&mut loaded, notes);
+                return Ok(Some(loaded));
+            }
+            Err(error) => {
+                skipped += 1;
+                if skipped <= 8 {
+                    notes.push(format!("Skipped installed camera profile {}: {error}", candidate.path.file_name().unwrap_or_default().to_string_lossy()));
+                }
+            }
+        }
+    }
+    let mut loaded = bundled::load(sensor, settings)?;
+    if let Some(loaded) = &mut loaded {
+        summarize_skipped(&mut notes, skipped);
+        append_notes(loaded, notes);
+    }
+    Ok(loaded)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn summarize_skipped(notes: &mut Vec<String>, skipped: usize) {
+    if skipped > 8 {
+        notes.push(format!("Skipped {} additional unusable installed camera profiles", skipped - 8));
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn append_notes(loaded: &mut Loaded, notes: Vec<String>) {
+    if let Some(limitations) = loaded.report.get_mut("limitations").and_then(Value::as_array_mut) {
+        limitations.extend(notes.into_iter().map(Value::String));
+    }
+}
+
+/// Read and validate one external file. The caller decides whether failure permits fallback.
+#[cfg(not(target_arch = "wasm32"))]
+fn load_external(path: &std::path::Path, sensor: &Sensor, settings: Option<&CameraSettings>, mut notes: Vec<String>) -> Result<Loaded, String> {
+    use std::{io::Read, path::PathBuf};
     // Cache only successful reads, by file identity. New installations are found on the next open.
     type Cache = std::collections::HashMap<PathBuf, (u64, Option<std::time::SystemTime>, Arc<CameraProfile>, String)>;
     static CACHE: std::sync::OnceLock<std::sync::Mutex<Cache>> = std::sync::OnceLock::new();
-    let metadata = std::fs::metadata(&path).map_err(|e| format!("camera profile: {e}"))?;
+    let metadata = std::fs::metadata(path).map_err(|e| format!("camera profile: {e}"))?;
+    if !metadata.is_file() {
+        return Err("camera profile is not a regular file".into());
+    }
     if metadata.len() > 32 * 1024 * 1024 {
         return Err("camera profile exceeds 32 MiB".into());
     }
@@ -121,22 +178,25 @@ pub(super) fn load(sensor: &Sensor, settings: Option<&CameraSettings>) -> Result
         .get_or_init(Default::default)
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(&path)
+        .get(path)
         .filter(|(len, time, _, _)| *len == metadata.len() && *time == modified)
         .map(|(_, _, p, d)| (p.clone(), d.clone()));
     let (profile, digest) = if let Some(cached) = cached {
         cached
     } else {
         let mut bytes = Vec::new();
-        std::fs::File::open(&path).map_err(|e| e.to_string())?.take(32 * 1024 * 1024 + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
-        let profile = Arc::new(CameraProfile::from_dcp(&bytes).map_err(|e| format!("{}: {e}", path.file_name().unwrap_or_default().to_string_lossy()))?);
+        std::fs::File::open(path).map_err(|e| e.to_string())?.take(32 * 1024 * 1024 + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+        if bytes.len() > 32 * 1024 * 1024 {
+            return Err("camera profile exceeds 32 MiB".into());
+        }
+        let profile = Arc::new(CameraProfile::from_dcp(&bytes).map_err(|e| e.to_string())?);
         profile.validate(sensor).map_err(|e| e.to_string())?;
         let digest = blake3::hash(&bytes).to_hex().to_string();
         let mut cache = CACHE.get_or_init(Default::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if cache.len() >= 64 {
             cache.clear();
         }
-        cache.insert(path.clone(), (metadata.len(), modified, profile.clone(), digest.clone()));
+        cache.insert(path.to_path_buf(), (metadata.len(), modified, profile.clone(), digest.clone()));
         (profile, digest)
     };
     profile.validate(sensor).map_err(|e| e.to_string())?;
@@ -148,17 +208,21 @@ pub(super) fn load(sensor: &Sensor, settings: Option<&CameraSettings>) -> Result
         "contrastCode":p.contrast_code,"brightnessCode":p.brightness_code,"saturationCode":p.saturation_code,"hueCode":p.hue_code,"filterEffectCode":p.filter_effect_code,"toningEffectCode":p.toning_effect_code})
     });
     let report = json!({"source":"external-dcp","profile":profile.name,"cameraModel":profile.camera_model,
-        "file":Path::new(&path).file_name().unwrap_or_default().to_string_lossy(),"digest":digest,"pictureControl":pc,
+        "file":path.file_name().unwrap_or_default().to_string_lossy(),"digest":digest,"pictureControl":pc,
         "calibrationIlluminants":profile.calibrations.iter().map(|c|c.temperature).collect::<Vec<_>>(),"exposureOffset":profile.exposure_offset,
         "toneCurvePoints":profile.tone_curve.len(),"hueSatMaps":profile.hue_sat_maps.len(),"lookTable":profile.look_table.as_ref().map(|t|t.dims),
         "embedPolicy":profile.embed_policy,"copyright":profile.copyright,"limitations":notes});
-    Ok(Some(Loaded { profile, report }))
+    Ok(Loaded { profile, report })
 }
 
 #[cfg(target_arch = "wasm32")]
-pub(super) fn load(_: &Sensor, _: Option<&CameraSettings>) -> Result<Option<Loaded>, String> {
+pub(super) fn load_with_policy(_: &Sensor, _: Option<&CameraSettings>, _: crate::CameraProfilePolicy) -> Result<Option<Loaded>, String> {
     Ok(None)
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "raw_profiles_loader_tests.rs"]
+mod loader_tests;
 
 pub(super) fn record(doc: &mut photocraft_doc::Document, loaded: &Loaded) {
     let json = loaded.report.to_string().replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
