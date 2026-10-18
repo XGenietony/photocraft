@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use photocraft_doc::Document;
+use photocraft_engine::color_cmds::ColorSettings;
 use serde_json::{Map, Value, json};
 
 use crate::PhotocraftApp;
@@ -279,6 +280,9 @@ pub const PREVIEWED: &[&str] = &[
     "layer.matting.colorDecontaminate",
     "layer.layerStyle.scaleEffects",
     "type.warpText",
+    // The preview shows the image through the chosen profile, as Photoshop's Preview does.
+    "edit.assignProfile",
+    "edit.convertToProfile",
 ];
 
 pub fn has_dialog(command: &str) -> bool {
@@ -293,8 +297,6 @@ pub fn has_dialog(command: &str) -> bool {
             command,
             "image.trim"
                 | "select.refineEdge"
-                | "edit.assignProfile"
-                | "edit.convertToProfile"
                 | "view.proofSetup"
                 | "layer.layerStyle.globalLight"
                 | "image.mode.colorTable"
@@ -555,6 +557,10 @@ pub(crate) fn source_label(key: &str) -> String {
     // Photoshop's name for the localized colour matching (Replace Color, Color Range).
     if key == "localized" {
         return "Localized Color Clusters".into();
+    }
+    // Convert to Profile's, Proof Setup's…: spelled out, as in Photoshop (not "Bpc").
+    if key == "bpc" {
+        return "Black Point Compensation".into();
     }
     // A name that already reads as text ("iPhone 14 Pro Max", "Web 1920") is not camelCase.
     if key.contains(' ') {
@@ -822,6 +828,11 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(label(&p.key)).color(t.text_dim));
                     crate::widgets::value_field(ui, &mut v, -30000.0..=30000.0, "", 80.0);
+                    // A seed gets a fresh random value in one click (#5710): Clouds, Add Noise,
+                    // Fibers… then render a new pattern, as each run of Photoshop's does.
+                    if p.key == "seed" && ui.button(tl!("Random")).clicked() {
+                        v = random_seed(ui.input(|i| i.time).to_bits(), v as i64) as f32;
+                    }
                 });
                 f.insert(p.key, json!(v.round() as i64));
             }
@@ -837,6 +848,15 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
         crate::widgets::checkbox(ui, &mut preview, tl!("Preview"));
         f.insert("__preview".into(), json!(preview));
     }
+}
+
+/// A new seed for a dialog's Random button: 0..=30000 (what the field takes), never `current`.
+/// `entropy` varies per click (the input time); the process's random hasher keys mix it.
+fn random_seed(entropy: u64, current: i64) -> i64 {
+    use std::hash::BuildHasher;
+    let h = std::collections::hash_map::RandomState::new().hash_one(entropy);
+    let seed = (h % 30_001) as i64;
+    if seed == current { (seed + 1) % 30_001 } else { seed }
 }
 
 /// User-facing params (strip the dialog's private `__` keys).
@@ -861,12 +881,23 @@ pub fn preview_document_with(
     k: u32,
     cancel: Option<&photocraft_engine::jobs::JobCtx>,
 ) -> Option<Document> {
-    preview_document_for_target(doc, active, command, params, k, cancel, photocraft_engine::channel_cmds::ChannelTarget::Composite, &[])
+    preview_document_for_target(
+        doc,
+        active,
+        command,
+        params,
+        k,
+        cancel,
+        photocraft_engine::channel_cmds::ChannelTarget::Composite,
+        &[],
+        &ColorSettings::default(),
+    )
 }
 
 /// Run the preview with the same pixel target as the final command, including individual channels.
 /// `documents` are the open documents in session order: document params (Match Color's Source,
-/// Displace's map) index into them.
+/// Displace's map) index into them. `color` is the app's Edit › Color Settings: Assign and Convert
+/// to Profile's `working` is the working space chosen there, not the built-in default.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn preview_document_for_target(
     doc: &Document,
@@ -877,6 +908,7 @@ pub(crate) fn preview_document_for_target(
     cancel: Option<&photocraft_engine::jobs::JobCtx>,
     target: photocraft_engine::channel_cmds::ChannelTarget,
     documents: &[Arc<Document>],
+    color: &ColorSettings,
 ) -> Option<Document> {
     if command == crate::select_mask_view::COMMAND {
         return crate::select_mask_view::preview_document(doc, active, params, k, cancel);
@@ -886,6 +918,7 @@ pub(crate) fn preview_document_for_target(
     let (run_k, reduce_k) = if command == "type.warpText" { (1, k) } else { (k, 1) };
     let proxy = crate::proxy::proxy_document(doc, run_k);
     let mut s = photocraft_engine::Session::new();
+    s.color.settings = color.clone();
     s.set_inline_job_ctx(cancel.cloned());
     let doc_id = proxy.id;
     s.add_document(proxy, None);
@@ -1005,6 +1038,28 @@ impl FilterPreviewKey {
 mod tests {
     use super::*;
 
+    /// #5710: the seed field's Random button always gives a different seed the field can hold.
+    #[test]
+    fn random_seeds_stay_in_range_and_change() {
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..200u64 {
+            let s = random_seed(i, 7);
+            assert!((0..=30_000).contains(&s), "{s}");
+            assert_ne!(s, 7, "a click always changes the seed");
+            seen.insert(s);
+        }
+        assert!(seen.len() > 100, "seeds spread out: {}", seen.len());
+        assert_ne!(random_seed(1, 30_000), 30_000);
+        // Every seed dialog shows the button: Clouds, Add Noise and the like carry a `seed` param.
+        let specs = photocraft_engine::command_specs();
+        assert!(
+            specs
+                .iter()
+                .filter(|c| c.id.starts_with("filter."))
+                .any(|c| parse_spec(c.params).iter().any(|p| p.key == "seed" && matches!(p.kind, Kind::Int { .. })))
+        );
+    }
+
     /// Preset names such as "iPhone 14 Pro Max" (the artboard dialog's choices) are text, not
     /// camelCase keys: they used to read "I Phone 14  Pro  Max".
     #[test]
@@ -1012,6 +1067,16 @@ mod tests {
         assert_eq!(source_label("iPhone 14 Pro Max"), "iPhone 14 Pro Max");
         assert_eq!(source_label("Web 1920"), "Web 1920");
         assert_eq!(source_label("centerX"), "Center X");
+    }
+
+    /// Convert to Profile's and Proof Setup's `bpc` read "Bpc": spelled out, and translated.
+    #[test]
+    fn black_point_compensation_is_spelled_out() {
+        assert_eq!(source_label("bpc"), "Black Point Compensation");
+        // English is the source: it has no catalog.
+        for lang in crate::i18n::Lang::all().filter(|l| l.code() != "en") {
+            assert!(crate::i18n::has(lang, "Black Point Compensation"), "{lang:?}");
+        }
     }
 
     fn key() -> FilterPreviewKey {
@@ -1533,6 +1598,7 @@ mod tests {
                 None,
                 photocraft_engine::channel_cmds::ChannelTarget::Composite,
                 &documents,
+                &ColorSettings::default(),
             )
             .unwrap_or_else(|| panic!("{label}: no preview"));
             let got = preview.layers[0].surface().unwrap().pixel(24, 16);
@@ -1548,6 +1614,7 @@ mod tests {
             None,
             photocraft_engine::channel_cmds::ChannelTarget::Composite,
             &documents,
+            &ColorSettings::default(),
         )
         .unwrap();
         let px = preview.layers[0].surface().unwrap().pixel(12, 8);
@@ -1920,8 +1987,12 @@ mod tests {
         assert_eq!(sm.smart_filters.len(), 1, "the preview adds the Curves smart filter");
         assert_eq!(shown.size, crate::proxy::proxy_document(&doc, k).size);
         // The 16 px square at (16, 16) is a 4 px square at (4, 4) on the proxy, not 16 px at (16, 16).
-        for (x, y) in [(4, 4), (5, 6), (7, 7)] {
+        // Its corners are partly covered by the smart object's resampling (220/255), its inside fully.
+        for (x, y) in [(5, 5), (5, 6), (6, 6)] {
             assert!(alpha(&shown, x, y) > 0.99, "({x}, {y}) is inside the reduced square");
+        }
+        for (x, y) in [(4, 4), (7, 7)] {
+            assert!(alpha(&shown, x, y) > 0.5, "({x}, {y}) is a corner of the reduced square");
         }
         for (x, y) in [(2, 2), (9, 9), (12, 12), (15, 15)] {
             assert!(alpha(&shown, x, y) < 0.01, "({x}, {y}) is outside the reduced square");
